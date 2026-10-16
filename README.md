@@ -86,7 +86,9 @@ npm test
 npm run test:browser
 ```
 
-ブラウザ検証は `.test-artifacts` 内の専用プロファイルで実行し、前面ウィンドウを操作する。実行中はブラウザを操作せず、通常利用と時間を分ける。結果と診断ログは同ディレクトリへ保存する。
+`npm run test:browser` は Brave をヘッドレスで起動し、OS のフォーカスを操作せず実行する。`.test-artifacts` 内の専用プロファイルを使い、結果と診断ログ、実行モードと除外ケース（`run.json`）を同ディレクトリへ保存する。通常利用の Brave で別の作業を続けられる。
+
+OS のフォーカスと外部起動を確認するときだけ `npm run test:browser:headed` を明示的に実行する。この試験は Brave を前面に出すため、通常利用と時間を分ける。ヘッドレス試験の成功は、OS のフォーカスや macOS `open` 経由のリンク配送の合格を意味しない。
 
 実装と検証の境界: [implementation.md](docs/implementation.md)。
 
