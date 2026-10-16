@@ -31,6 +31,13 @@ Brave 向けに、タブの自動グループ分けと重複防止を統合す�
 
 macOS、Brave、Python 3.11 以上、Node.js 22 以上、OpenSSL が必要。
 
+初回登録は `make install`、拡張コードの更新は `make update` で実行できる。
+`make install` は設定ファイルがなければサンプルをコピーし、検証・ビルド後にBraveでの読み込み手順を表示する。読み込み後に Enter を押すと設定を反映する。
+`make update` はビルド後に再読み込み手順を表示し、Enter 後に保存済み設定を確認する。
+Braveへの初回読み込みと拡張の再読み込みは手動で行う。途中で中止する場合は Ctrl+C。端末から実行する。
+
+設定だけの変更は `make apply`、反映済み設定の確認は `make status`。以下の直接コマンドも引き続き使える。
+
 ```sh
 # 初回だけ。既存の config.toml があればコピー不要
 cp -n config.example.toml config.toml
