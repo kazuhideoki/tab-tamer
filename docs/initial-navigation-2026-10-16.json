@@ -1,0 +1,185 @@
+{
+  "date": "2026-10-16",
+  "unit_tests": {
+    "passed": 38
+  },
+  "full_browser_regression": {
+    "passed": 24,
+    "results": [
+      {
+        "name": "signed CLI apply without manual reload",
+        "ok": true
+      },
+      {
+        "name": "automatic grouping",
+        "ok": true
+      },
+      {
+        "name": "foreground duplicate expands collapsed group and reuses old tab",
+        "ok": true
+      },
+      {
+        "name": "discarded grouped target is reused",
+        "ok": true
+      },
+      {
+        "name": "initial same-URL history update reuses grouped target",
+        "ok": true
+      },
+      {
+        "name": "automatic initial SPA URL changes reuse final foreground and background targets",
+        "ok": true
+      },
+      {
+        "name": "HTTP and client redirect chain reuses the final SPA destination",
+        "ok": true
+      },
+      {
+        "name": "trusted same-tab link navigation during initial loading retains duplicates",
+        "ok": true
+      },
+      {
+        "name": "trusted same-tab spa navigation during initial loading retains duplicates",
+        "ok": true
+      },
+      {
+        "name": "trusted link opening a new tab still deduplicates after redirects",
+        "ok": true
+      },
+      {
+        "name": "explicit tab duplication retains the copied tab",
+        "ok": true
+      },
+      {
+        "name": "background duplicate preserves selection and collapsed group",
+        "ok": true
+      },
+      {
+        "name": "cross-window foreground reuses target window",
+        "ok": true
+      },
+      {
+        "name": "user switch during redirect is not overridden",
+        "ok": true
+      },
+      {
+        "name": "existing-tab navigation is never deduplicated",
+        "ok": true
+      },
+      {
+        "name": "rapid new duplicates leave one survivor",
+        "ok": true
+      },
+      {
+        "name": "query and fragment remain distinct",
+        "ok": true
+      },
+      {
+        "name": "browser link opens a new tab and reuses the existing page",
+        "ok": true
+      },
+      {
+        "name": "external browser command reuses existing page",
+        "ok": true
+      },
+      {
+        "name": "macOS open launch reuses existing page",
+        "ok": true
+      },
+      {
+        "name": "config apply updates existing group metadata without reload",
+        "ok": true
+      },
+      {
+        "name": "invalid config never reaches browser",
+        "ok": true
+      },
+      {
+        "name": "CLI status verifies persisted hash",
+        "ok": true
+      },
+      {
+        "name": "configuration survives browser restart",
+        "ok": true
+      }
+    ],
+    "build_sha256": {
+      "engine.js": "9d24967840b205339f86d816e213378fe45fe6aee87c6db1736b21bfd4be6077",
+      "worker.js": "7553bd4ee14625f57689e111e39dca63f0c8358d40999490d014c264ce1bba05",
+      "manifest.json": "f936631ece8ebe92b7f4d8cda6a08631b91994bd4087f40017d263f3ea4d7bb9",
+      "interaction.js": "c0df11953a4ec10c3b47aa1c6281e5be8aeb31f2b0ce5cff591446298c3074bd",
+      "policy.js": "0593b90c7b78e78b23655351eb5e4e969b7e6e30ce1bd725e9eea0c8bf440fd9"
+    }
+  },
+  "notes": [
+    "Full regression preceded a final change to preserve grouping after user interaction; related browser regression is recorded separately below.",
+    "Isolated-profile behavior checks passed. The normal profile was subsequently updated and its signed startup/status response and configuration preservation were verified; its duplicate checks did not pass before the final explicit reload, and behavior was not retested afterward."
+  ],
+  "final_related_browser_regression": {
+    "passed": 10,
+    "results": [
+      {
+        "name": "signed CLI apply without manual reload",
+        "ok": true
+      },
+      {
+        "name": "automatic grouping",
+        "ok": true
+      },
+      {
+        "name": "discarded grouped target is reused",
+        "ok": true
+      },
+      {
+        "name": "automatic initial SPA URL changes reuse final foreground and background targets",
+        "ok": true
+      },
+      {
+        "name": "HTTP and client redirect chain reuses the final SPA destination",
+        "ok": true
+      },
+      {
+        "name": "trusted same-tab link navigation during initial loading retains duplicates",
+        "ok": true
+      },
+      {
+        "name": "trusted same-tab spa navigation during initial loading retains duplicates",
+        "ok": true
+      },
+      {
+        "name": "trusted link opening a new tab still deduplicates after redirects",
+        "ok": true
+      },
+      {
+        "name": "explicit tab duplication retains the copied tab",
+        "ok": true
+      },
+      {
+        "name": "background duplicate preserves selection and collapsed group",
+        "ok": true
+      }
+    ],
+    "build_sha256": {
+      "engine.js": "58d8a913c0ce3371a938ae6ce353e13c6452fba1175b91e384fd03aabb1cd637",
+      "worker.js": "7553bd4ee14625f57689e111e39dca63f0c8358d40999490d014c264ce1bba05",
+      "manifest.json": "f936631ece8ebe92b7f4d8cda6a08631b91994bd4087f40017d263f3ea4d7bb9",
+      "interaction.js": "c0df11953a4ec10c3b47aa1c6281e5be8aeb31f2b0ce5cff591446298c3074bd",
+      "policy.js": "0593b90c7b78e78b23655351eb5e4e969b7e6e30ce1bd725e9eea0c8bf440fd9"
+    }
+  },
+  "final_source_sha256": {
+    "engine.js": "58d8a913c0ce3371a938ae6ce353e13c6452fba1175b91e384fd03aabb1cd637",
+    "worker.js": "7553bd4ee14625f57689e111e39dca63f0c8358d40999490d014c264ce1bba05",
+    "manifest.json": "53a18b3a882e4fda05dd87d55d6e04cede72a8dcfd91c75f38d3872cd5f77680",
+    "interaction.js": "c0df11953a4ec10c3b47aa1c6281e5be8aeb31f2b0ce5cff591446298c3074bd",
+    "policy.js": "0593b90c7b78e78b23655351eb5e4e969b7e6e30ce1bd725e9eea0c8bf440fd9"
+  },
+  "normal_profile_deployment": {
+    "installed": true,
+    "explicit_reload_completed": true,
+    "signed_status_verified": true,
+    "configuration_preserved": true,
+    "duplicate_behavior_verified": false,
+    "known_limitation": "The reported real-site behavior issue remains unverified after final reload."
+  }
+}

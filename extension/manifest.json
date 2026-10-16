@@ -4,6 +4,7 @@
   "minimum_chrome_version":"121","incognito":"not_allowed",
   "permissions":["tabs","tabGroups","storage","webNavigation"],
   "host_permissions":["http://127.0.0.1/*"],
+  "content_scripts":[{"matches":["http://*/*","https://*/*"],"js":["interaction.js"],"run_at":"document_start","all_frames":true,"match_about_blank":true}],
   "background":{"service_worker":"worker.js","type":"module"},
   "action":{"default_title":"Tab Tamer","default_popup":"status.html"}
 }
