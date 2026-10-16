@@ -1,21 +1,38 @@
-// Live Brave acceptance checks in an isolated profile. Never touches Default.
+// Isolated Brave checks. Headless by default; --headed explicitly enables OS focus tests.
 import {mkdtemp,readFile,writeFile,mkdir,rm} from 'node:fs/promises';import {openSync,closeSync} from 'node:fs';import {join,resolve} from 'node:path';import {spawn} from 'node:child_process';import http from 'node:http';import assert from 'node:assert/strict';
+const headed=process.argv.includes('--headed');
+if(process.argv.slice(2).some(arg=>arg!=='--headed'))throw Error('Usage: node tests/browser.mjs [--headed]');
+console.log(`Browser mode: ${headed?'headed (uses OS focus)':'headless (no OS focus)'}`);
 const root=resolve('.');await mkdir('.test-artifacts',{recursive:true});const work=await mkdtemp(join(root,'.test-artifacts/brave-'));const profile=join(work,'profile');
 const brave='/Applications/Brave Browser.app/Contents/MacOS/Brave Browser';const identity=JSON.parse(await readFile('.tab-tamer/identity.json','utf8'));
 const delay=ms=>new Promise(r=>setTimeout(r,ms));let browser,ws,workerSession;let seq=0;const requests=new Map();const results=[];
 function command(cmd,args){return new Promise((resolve,reject)=>{const p=spawn(cmd,args,{cwd:root,stdio:['ignore','pipe','pipe']});let out='',err='';p.stdout.on('data',b=>out+=b);p.stderr.on('data',b=>err+=b);p.on('error',reject);p.on('exit',code=>code===0?resolve(out):reject(Error(`${cmd}: ${err||out}`)));});}
 let slowGate=Promise.resolve(),releaseSlow;
 const server=http.createServer((req,res)=>{
+ if(!headed&&req.url==='/test-open'&&req.method==='POST'){
+  let body='';req.on('data',b=>body+=b);req.on('end',async()=>{
+   try{const {url}=JSON.parse(body);assert.ok(url.startsWith(`chrome-extension://${identity.id}/apply.html#`));await rpc('Target.createTarget',{url});res.end('ok');}
+   catch(e){res.statusCode=400;res.end(String(e));}
+  });return;
+ }
  if(req.url.startsWith('/slow')){slowGate.then(()=>{res.writeHead(302,{Location:'/target'});res.end();});return;}
  if(req.url.startsWith('/target-spa')){res.setHeader('Content-Type','text/html');res.end('<!doctype html><title>SPA initial state</title><script>history.replaceState({ready:true},"",location.href)</script>');return;}
  res.setHeader('Content-Type','text/html');res.end('<!doctype html><title>Tab Tamer acceptance</title><h1>Test page</h1><a href="/target" target="_blank">Open target</a>');
 });await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`;
+// The CLI still signs, serves and verifies the real request. Only URL delivery is
+// adapted: a second headless Chromium process cannot forward URLs to the first.
+const launcher=join(work,'open-in-test-browser');
+await writeFile(launcher,`#!/usr/bin/env node
+const response=await fetch(${JSON.stringify(base+'/test-open')},{method:'POST',body:JSON.stringify({url:process.argv.at(-1)})});
+if(!response.ok)throw Error(await response.text());
+`,{mode:0o700});
+const cliBrowserArgs=headed?[]:['--browser',launcher];
 await writeFile(join(work,'config.toml'),`version=1\n[dedup]\nsettle_ms=300\n[[groups]]\nid="test"\nname="Tab Tamer Test"\ncolor="blue"\nurls=["${base}/target*"]\n`);
 function rpc(method,params={},sessionId){return new Promise((resolve,reject)=>{const id=++seq;const timer=setTimeout(()=>{requests.delete(id);reject(Error('CDP timeout: '+method));},45000);requests.set(id,{resolve:v=>{clearTimeout(timer);resolve(v);},reject:e=>{clearTimeout(timer);reject(Error(JSON.stringify(e)));}});ws.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}));});}
 async function start(){
  await rm(join(profile,'DevToolsActivePort'),{force:true});
  const logFd=openSync(join(work,'browser.log'),'a');
- browser=spawn(brave,[`--user-data-dir=${profile}`,`--load-extension=${join(root,'dist')}`,`--disable-extensions-except=${join(root,'dist')}`,'--enable-logging=stderr','--remote-debugging-port=0','--no-first-run','--no-default-browser-check','about:blank'],{stdio:['ignore','ignore',logFd]});closeSync(logFd);
+ browser=spawn(brave,[...(headed?[]:['--headless=new']),`--user-data-dir=${profile}`,`--load-extension=${join(root,'dist')}`,`--disable-extensions-except=${join(root,'dist')}`,'--enable-logging=stderr','--remote-debugging-port=0','--no-first-run','--no-default-browser-check','about:blank'],{stdio:['ignore','ignore',logFd]});closeSync(logFd);
  let info;for(let i=0;i<150;i++){try{info=await readFile(join(profile,'DevToolsActivePort'),'utf8');break;}catch{await delay(100);}}if(!info)throw Error('No browser endpoint');
  const [port,path]=info.trim().split('\n');ws=new WebSocket(`ws://127.0.0.1:${port}${path}`);await new Promise((r,j)=>{ws.onopen=r;ws.onerror=j;});ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.method==='Debugger.paused'){console.log('Worker debugger paused, resuming');ws.send(JSON.stringify({id:++seq,method:'Debugger.resume',sessionId:m.sessionId}));}const p=requests.get(m.id);if(p){requests.delete(m.id);m.error?p.reject(m.error):p.resolve(m.result);}};
  let target;for(let i=0;i<100;i++){const {targetInfos}=await rpc('Target.getTargets');target=targetInfos.find(t=>t.url===`chrome-extension://${identity.id}/worker.js`);if(target)break;await delay(100);}if(!target)throw Error('Worker not loaded');workerSession=null;
@@ -35,6 +52,7 @@ async function evaluate(code){try{
 async function stop(){if(ws?.readyState===1)ws.send(JSON.stringify({id:++seq,method:'Browser.close'}));await delay(1500);ws?.close();if(browser?.exitCode===null)browser.kill('SIGTERM');await delay(500);}
 async function tabs(){return evaluate('return await chrome.tabs.query({});');}
 async function focusBrowser(){
+ if(!headed)return;
  await command('osascript',['-e',`tell application "System Events" to set frontmost of (first application process whose unix id is ${browser.pid}) to true`]);
  await delay(300);
 }
@@ -43,7 +61,7 @@ const json=JSON.stringify;let target,other,window1;
 try{
  await start();
  await check('signed CLI apply without manual reload',async()=>{
-  const output=await command('./tab-tamer',['apply','--config',join(work,'config.toml'),'--user-data-dir',profile]);assert.match(output,/apply: verified/);
+  const output=await command('./tab-tamer',['apply',...cliBrowserArgs,'--config',join(work,'config.toml'),'--user-data-dir',profile]);assert.match(output,/apply: verified/);
   const saved=await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord;');assert.equal(saved.config.groups.length,1);
  });
  await focusBrowser();await delay(700);
@@ -117,13 +135,13 @@ try{
   await delay(1800);const all=await tabs();assert.equal(all.filter(t=>t.url===base+'/target').length,1);assert.ok(all.find(t=>t.id===target).active);
   await rpc('Target.detachFromTarget',{sessionId:session});
  });
- await check('external browser command reuses existing page',async()=>{
+ if(headed)await check('external browser command reuses existing page',async()=>{
   await evaluate(`globalThis.testEvents=[];chrome.tabs.onCreated.addListener(t=>testEvents.push(['created',t]));chrome.tabs.onUpdated.addListener((id,c)=>testEvents.push(['updated',id,c]));chrome.webNavigation.onCommitted.addListener(d=>{if(d.frameId===0)testEvents.push(['committed',d]);});chrome.webNavigation.onErrorOccurred.addListener(d=>testEvents.push(['error',d]));`);
   await evaluate(`await chrome.tabs.update(${other},{active:true});`);
   await command(brave,[`--user-data-dir=${profile}`,base+'/target']);await delay(1800);
   const all=await tabs();assert.equal(all.filter(t=>t.url===base+'/target').length,1);assert.ok(all.find(t=>t.id===target).active);
  });
- await check('macOS open launch reuses existing page',async()=>{
+ if(headed)await check('macOS open launch reuses existing page',async()=>{
   await evaluate(`await chrome.tabs.update(${other},{active:true});`);
   await command('open',['-n','-a','/Applications/Brave Browser.app','--args',`--user-data-dir=${profile}`,base+'/target']);await delay(1800);
   const all=await tabs();assert.equal(all.filter(t=>t.url===base+'/target').length,1);assert.ok(all.find(t=>t.id===target).active);
@@ -143,17 +161,18 @@ try{
  await check('config apply updates existing group metadata without reload',async()=>{
   const groupId=(await tabs()).find(t=>t.id===target).groupId;
   const path=join(work,'config.toml');const text=await readFile(path,'utf8');await writeFile(path,text.replace('Tab Tamer Test','Renamed Test').replace('color="blue"','color="green"'));
-  assert.match(await command('./tab-tamer',['apply','--config',path,'--user-data-dir',profile]),/apply: verified/);await delay(500);
+  assert.match(await command('./tab-tamer',['apply',...cliBrowserArgs,'--config',path,'--user-data-dir',profile]),/apply: verified/);await delay(500);
   const group=await evaluate(`return await chrome.tabGroups.get(${groupId});`);assert.equal(group.title,'Renamed Test');assert.equal(group.color,'green');
  });
  await check('invalid config never reaches browser',async()=>{
   await writeFile(join(work,'invalid.toml'),'version=1\n[dedup]\nenabled="yes"\n');const before=await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord.hash;');
-  await assert.rejects(command('./tab-tamer',['apply','--config',join(work,'invalid.toml'),'--user-data-dir',profile]));assert.equal(await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord.hash;'),before);
+  await assert.rejects(command('./tab-tamer',['apply',...cliBrowserArgs,'--config',join(work,'invalid.toml'),'--user-data-dir',profile]));assert.equal(await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord.hash;'),before);
  });
- await check('CLI status verifies persisted hash',async()=>{assert.match(await command('./tab-tamer',['status','--user-data-dir',profile]),/status: verified/);});
+ await check('CLI status verifies persisted hash',async()=>{assert.match(await command('./tab-tamer',['status',...cliBrowserArgs,'--user-data-dir',profile]),/status: verified/);});
  const savedHash=await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord.hash;');
  await stop();await start();
- await check('configuration survives browser restart',async()=>{assert.equal(await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord.hash;'),savedHash);assert.match(await command('./tab-tamer',['status','--user-data-dir',profile]),/status: verified/);const id=await evaluate(`return (await chrome.tabs.create({url:${json(base+'/target?restart=1')},active:false})).id;`);await delay(1200);assert.notEqual((await tabs()).find(t=>t.id===id).groupId,-1);});
+ await check('configuration survives browser restart',async()=>{assert.equal(await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord.hash;'),savedHash);assert.match(await command('./tab-tamer',['status',...cliBrowserArgs,'--user-data-dir',profile]),/status: verified/);const id=await evaluate(`return (await chrome.tabs.create({url:${json(base+'/target?restart=1')},active:false})).id;`);await delay(1200);assert.notEqual((await tabs()).find(t=>t.id===id).groupId,-1);});
+ await writeFile(join(work,'run.json'),JSON.stringify({mode:headed?'headed':'headless',osFocusChecksEnabled:headed,skipped:headed?[]:['external browser command reuses existing page','macOS open launch reuses existing page']},null,2));
  await writeFile(join(work,'results.json'),JSON.stringify(results,null,2));console.log('Results:',join(work,'results.json'));
 }catch(e){console.error(e);results.push({ok:false,error:String(e)});try{await writeFile(join(work,'failure.json'),JSON.stringify({results,events:await evaluate('return globalThis.testEvents;'),windows:await evaluate('return await chrome.windows.getAll({});'),tabs:await tabs(),logs:await evaluate('return await chrome.storage.session.get("logs");')},null,2));}catch{}process.exitCode=1;
 }finally{releaseSlow?.();await stop();server.close();}
