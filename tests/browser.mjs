@@ -1,0 +1,159 @@
+// Live Brave acceptance checks in an isolated profile. Never touches Default.
+import {mkdtemp,readFile,writeFile,mkdir,rm} from 'node:fs/promises';import {openSync,closeSync} from 'node:fs';import {join,resolve} from 'node:path';import {spawn} from 'node:child_process';import http from 'node:http';import assert from 'node:assert/strict';
+const root=resolve('.');await mkdir('.test-artifacts',{recursive:true});const work=await mkdtemp(join(root,'.test-artifacts/brave-'));const profile=join(work,'profile');
+const brave='/Applications/Brave Browser.app/Contents/MacOS/Brave Browser';const identity=JSON.parse(await readFile('.tab-tamer/identity.json','utf8'));
+const delay=ms=>new Promise(r=>setTimeout(r,ms));let browser,ws,workerSession;let seq=0;const requests=new Map();const results=[];
+function command(cmd,args){return new Promise((resolve,reject)=>{const p=spawn(cmd,args,{cwd:root,stdio:['ignore','pipe','pipe']});let out='',err='';p.stdout.on('data',b=>out+=b);p.stderr.on('data',b=>err+=b);p.on('error',reject);p.on('exit',code=>code===0?resolve(out):reject(Error(`${cmd}: ${err||out}`)));});}
+let slowGate=Promise.resolve(),releaseSlow;
+const server=http.createServer((req,res)=>{
+ if(req.url.startsWith('/slow')){slowGate.then(()=>{res.writeHead(302,{Location:'/target'});res.end();});return;}
+ if(req.url.startsWith('/target-spa')){res.setHeader('Content-Type','text/html');res.end('<!doctype html><title>SPA initial state</title><script>history.replaceState({ready:true},"",location.href)</script>');return;}
+ res.setHeader('Content-Type','text/html');res.end('<!doctype html><title>Tab Tamer acceptance</title><h1>Test page</h1><a href="/target" target="_blank">Open target</a>');
+});await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`;
+await writeFile(join(work,'config.toml'),`version=1\n[dedup]\nsettle_ms=300\n[[groups]]\nid="test"\nname="Tab Tamer Test"\ncolor="blue"\nurls=["${base}/target*"]\n`);
+function rpc(method,params={},sessionId){return new Promise((resolve,reject)=>{const id=++seq;const timer=setTimeout(()=>{requests.delete(id);reject(Error('CDP timeout: '+method));},45000);requests.set(id,{resolve:v=>{clearTimeout(timer);resolve(v);},reject:e=>{clearTimeout(timer);reject(Error(JSON.stringify(e)));}});ws.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}));});}
+async function start(){
+ await rm(join(profile,'DevToolsActivePort'),{force:true});
+ const logFd=openSync(join(work,'browser.log'),'a');
+ browser=spawn(brave,[`--user-data-dir=${profile}`,`--load-extension=${join(root,'dist')}`,`--disable-extensions-except=${join(root,'dist')}`,'--enable-logging=stderr','--remote-debugging-port=0','--no-first-run','--no-default-browser-check','about:blank'],{stdio:['ignore','ignore',logFd]});closeSync(logFd);
+ let info;for(let i=0;i<150;i++){try{info=await readFile(join(profile,'DevToolsActivePort'),'utf8');break;}catch{await delay(100);}}if(!info)throw Error('No browser endpoint');
+ const [port,path]=info.trim().split('\n');ws=new WebSocket(`ws://127.0.0.1:${port}${path}`);await new Promise((r,j)=>{ws.onopen=r;ws.onerror=j;});ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.method==='Debugger.paused'){console.log('Worker debugger paused, resuming');ws.send(JSON.stringify({id:++seq,method:'Debugger.resume',sessionId:m.sessionId}));}const p=requests.get(m.id);if(p){requests.delete(m.id);m.error?p.reject(m.error):p.resolve(m.result);}};
+ let target;for(let i=0;i<100;i++){const {targetInfos}=await rpc('Target.getTargets');target=targetInfos.find(t=>t.url===`chrome-extension://${identity.id}/worker.js`);if(target)break;await delay(100);}if(!target)throw Error('Worker not loaded');workerSession=null;
+ await focusBrowser();
+ await delay(5500); // Startup/session-restore guard, not part of event timing assertions.
+}
+async function evaluate(code){try{
+ if(!workerSession){
+  const {targetId}=await rpc('Target.createTarget',{url:`chrome-extension://${identity.id}/status.html`});
+  workerSession=(await rpc('Target.attachToTarget',{targetId,flatten:true})).sessionId;
+  await delay(300);
+ }
+ const r=await rpc('Runtime.evaluate',{expression:`(async()=>{${code}})()`,awaitPromise:true,returnByValue:true},workerSession);
+ if(r.exceptionDetails)throw Error(JSON.stringify(r.exceptionDetails));return r.result.value;
+}catch(e){throw Error(e.message+' evaluating '+code.slice(0,160));}}
+
+async function stop(){if(ws?.readyState===1)ws.send(JSON.stringify({id:++seq,method:'Browser.close'}));await delay(1500);ws?.close();if(browser?.exitCode===null)browser.kill('SIGTERM');await delay(500);}
+async function tabs(){return evaluate('return await chrome.tabs.query({});');}
+async function focusBrowser(){
+ await command('osascript',['-e',`tell application "System Events" to set frontmost of (first application process whose unix id is ${browser.pid}) to true`]);
+ await delay(300);
+}
+async function check(name,fn){const match=process.env.TAB_TAMER_TEST_MATCH;if(match&&!/signed CLI|automatic grouping/.test(name)&&!new RegExp(match).test(name)){console.log('SKIP',name);return;}console.log('RUN',name);await focusBrowser();await fn();results.push({name,ok:true});console.log('PASS',name);}
+const json=JSON.stringify;let target,other,window1;
+try{
+ await start();
+ await check('signed CLI apply without manual reload',async()=>{
+  const output=await command('./tab-tamer',['apply','--config',join(work,'config.toml'),'--user-data-dir',profile]);assert.match(output,/apply: verified/);
+  const saved=await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord;');assert.equal(saved.config.groups.length,1);
+ });
+ await focusBrowser();await delay(700);
+ ({target,other,window1}=await evaluate(`const w=await chrome.windows.create({url:${json(base+'/target')},focused:true});return {target:w.tabs[0].id,window1:w.id};`));
+ await delay(1000);other=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(base+'/other')},active:true})).id;`);await delay(800);
+ await check('automatic grouping',async()=>{const t=(await tabs()).find(t=>t.id===target);assert.notEqual(t.groupId,-1);const g=await evaluate(`return await chrome.tabGroups.get(${t.groupId});`);assert.equal(g.title,'Tab Tamer Test');});
+ await check('foreground duplicate expands collapsed group and reuses old tab',async()=>{
+  const g=(await tabs()).find(t=>t.id===target).groupId;await evaluate(`await chrome.tabGroups.update(${g},{collapsed:true});`);
+  assert.equal((await evaluate(`return await chrome.tabGroups.get(${g});`)).collapsed,true);
+  await evaluate(`await chrome.windows.update(${window1},{focused:true});`);
+  assert.ok((await evaluate(`return await chrome.windows.get(${window1});`)).focused,'test window must be foreground');
+  const n=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(base+'/target')},active:true})).id;`);await delay(1300);
+  const all=await tabs();assert.ok(!all.some(t=>t.id===n));assert.ok(all.find(t=>t.id===target).active);assert.equal((await evaluate(`return await chrome.tabGroups.get(${g});`)).collapsed,false);
+ });
+ await check('discarded grouped target is reused',async()=>{
+  await evaluate(`await chrome.tabs.update(${other},{active:true});await chrome.tabs.discard(${target});`);
+  target=(await tabs()).find(t=>t.url===base+'/target').id;
+  assert.equal((await tabs()).find(t=>t.id===target).discarded,true);
+  await focusBrowser();await evaluate(`await chrome.windows.update(${window1},{focused:true});`);
+  const n=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(base+'/target')},active:true})).id;`);await delay(1600);
+  assert.ok(!(await tabs()).some(t=>t.id===n));assert.ok((await tabs()).find(t=>t.id===target).active);
+ });
+ await check('initial same-URL history update reuses grouped target',async()=>{
+  const url=base+'/target-spa';
+  const first=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(url)},active:true})).id;`);await delay(900);
+  assert.notEqual((await tabs()).find(t=>t.id===first).groupId,-1);
+  await focusBrowser();await evaluate(`await chrome.windows.update(${window1},{focused:true});`);
+  const second=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(url)},active:true})).id;`);await delay(1400);
+  assert.ok(!(await tabs()).some(t=>t.id===second),'initial history.replaceState must not exempt a duplicate');
+  assert.ok((await tabs()).find(t=>t.id===first).active);
+  const background=await evaluate(`await chrome.tabs.update(${other},{active:true});return (await chrome.tabs.create({windowId:${window1},url:${json(url)},active:false})).id;`);await delay(1000);
+  assert.ok(!(await tabs()).some(t=>t.id===background));assert.ok((await tabs()).find(t=>t.id===other).active);
+  await evaluate(`await chrome.tabs.update(${other},{url:${json(url)},active:true});`);await delay(1000);
+  assert.ok((await tabs()).some(t=>t.id===other),'existing-tab navigation remains allowed');
+  await evaluate(`await chrome.tabs.update(${other},{url:${json(base+'/other')}});await chrome.tabs.remove(${first});`);await delay(600);
+ });
+ await check('background duplicate preserves selection and collapsed group',async()=>{
+  const g=(await tabs()).find(t=>t.id===target).groupId;await evaluate(`await chrome.tabs.update(${other},{active:true});await chrome.tabGroups.update(${g},{collapsed:true});`);
+  const n=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(base+'/target')},active:false})).id;`);await delay(1300);
+  const all=await tabs();assert.ok(!all.some(t=>t.id===n));assert.ok(all.find(t=>t.id===other).active);assert.equal((await evaluate(`return await chrome.tabGroups.get(${g});`)).collapsed,true);
+ });
+ let window2;
+ await check('cross-window foreground reuses target window',async()=>{
+  window2=await evaluate(`return (await chrome.windows.create({url:${json(base+'/second')},focused:true})).id;`);await delay(800);
+  const n=await evaluate(`return (await chrome.tabs.create({windowId:${window2},url:${json(base+'/target')},active:true})).id;`);await delay(1400);
+  assert.ok(!(await tabs()).some(t=>t.id===n));assert.ok((await evaluate(`return await chrome.windows.get(${window1});`)).focused);assert.ok((await tabs()).find(t=>t.id===target).active);
+ });
+ await check('user switch during redirect is not overridden',async()=>{
+  slowGate=new Promise(resolve=>{releaseSlow=resolve;});
+  const n=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(base+'/slow')},active:true})).id;`);await delay(150);
+  assert.equal((await tabs()).find(t=>t.id===n)?.status,'loading');
+  await evaluate(`await chrome.tabs.update(${other},{active:true});`);releaseSlow();await delay(1600);
+  assert.ok((await tabs()).find(t=>t.id===other).active);assert.ok(!(await tabs()).some(t=>t.id===n));
+ });
+ await check('existing-tab navigation is never deduplicated',async()=>{
+  await evaluate(`await chrome.tabs.update(${other},{url:${json(base+'/target')},active:true});`);await delay(1200);assert.ok((await tabs()).some(t=>t.id===other));
+  await evaluate(`await chrome.tabs.update(${other},{url:${json(base+'/other')},active:true});`);await delay(700);
+ });
+ await check('rapid new duplicates leave one survivor',async()=>{
+  const ids=await evaluate(`const ids=[];for(let i=0;i<3;i++)ids.push((await chrome.tabs.create({windowId:${window1},url:${json(base+'/target')},active:true})).id);return ids;`);await delay(1600);
+  const all=await tabs();assert.equal(all.filter(t=>t.url===base+'/target').length,1);assert.ok(all.some(t=>t.id===target));assert.ok(ids.every(id=>!all.some(t=>t.id===id)));
+ });
+ await check('query and fragment remain distinct',async()=>{
+  for(const suffix of ['?q=1','#section']){const n=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(base+'/target'+suffix)},active:false})).id;`);await delay(900);assert.ok((await tabs()).some(t=>t.id===n));}
+ });
+ await check('browser link opens a new tab and reuses the existing page',async()=>{
+  await evaluate(`await chrome.windows.update(${window1},{focused:true});await chrome.tabs.update(${other},{active:true});`);
+  const {targetInfos}=await rpc('Target.getTargets');const page=targetInfos.find(t=>t.type==='page'&&t.url===base+'/other');assert.ok(page);
+  const session=(await rpc('Target.attachToTarget',{targetId:page.targetId,flatten:true})).sessionId;
+  await rpc('Runtime.evaluate',{expression:"document.querySelector('a').click()",userGesture:true},session);
+  await delay(1800);const all=await tabs();assert.equal(all.filter(t=>t.url===base+'/target').length,1);assert.ok(all.find(t=>t.id===target).active);
+  await rpc('Target.detachFromTarget',{sessionId:session});
+ });
+ await check('external browser command reuses existing page',async()=>{
+  await evaluate(`globalThis.testEvents=[];chrome.tabs.onCreated.addListener(t=>testEvents.push(['created',t]));chrome.tabs.onUpdated.addListener((id,c)=>testEvents.push(['updated',id,c]));chrome.webNavigation.onCommitted.addListener(d=>{if(d.frameId===0)testEvents.push(['committed',d]);});chrome.webNavigation.onErrorOccurred.addListener(d=>testEvents.push(['error',d]));`);
+  await evaluate(`await chrome.tabs.update(${other},{active:true});`);
+  await command(brave,[`--user-data-dir=${profile}`,base+'/target']);await delay(1800);
+  const all=await tabs();assert.equal(all.filter(t=>t.url===base+'/target').length,1);assert.ok(all.find(t=>t.id===target).active);
+ });
+ await check('macOS open launch reuses existing page',async()=>{
+  await evaluate(`await chrome.tabs.update(${other},{active:true});`);
+  await command('open',['-n','-a','/Applications/Brave Browser.app','--args',`--user-data-dir=${profile}`,base+'/target']);await delay(1800);
+  const all=await tabs();assert.equal(all.filter(t=>t.url===base+'/target').length,1);assert.ok(all.find(t=>t.id===target).active);
+ });
+ if(process.env.TAB_TAMER_TEST_GITHUB)await check('GitHub expanded group reuses an initially opened repository',async()=>{
+  const url='https://github.com/octocat/Hello-World';
+  const first=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(url)},active:true})).id;`);
+  for(let i=0;i<100;i++){if((await tabs()).find(t=>t.id===first)?.status==='complete')break;await delay(150);}
+  assert.equal((await tabs()).find(t=>t.id===first)?.status,'complete');await delay(500);
+  const group=await evaluate(`return await chrome.tabs.group({tabIds:[${first}]});`);
+  await evaluate(`await chrome.tabGroups.update(${group},{title:'GitHub regression',color:'grey',collapsed:false});await chrome.windows.update(${window1},{focused:true});`);
+  const second=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(url)},active:true})).id;`);
+  for(let i=0;i<100;i++){if(!(await tabs()).some(t=>t.id===second))break;await delay(150);}
+  assert.ok(!(await tabs()).some(t=>t.id===second));assert.ok((await tabs()).find(t=>t.id===first).active);
+  await evaluate(`await chrome.tabs.remove(${first});`);
+ });
+ await check('config apply updates existing group metadata without reload',async()=>{
+  const groupId=(await tabs()).find(t=>t.id===target).groupId;
+  const path=join(work,'config.toml');const text=await readFile(path,'utf8');await writeFile(path,text.replace('Tab Tamer Test','Renamed Test').replace('color="blue"','color="green"'));
+  assert.match(await command('./tab-tamer',['apply','--config',path,'--user-data-dir',profile]),/apply: verified/);await delay(500);
+  const group=await evaluate(`return await chrome.tabGroups.get(${groupId});`);assert.equal(group.title,'Renamed Test');assert.equal(group.color,'green');
+ });
+ await check('invalid config never reaches browser',async()=>{
+  await writeFile(join(work,'invalid.toml'),'version=1\n[dedup]\nenabled="yes"\n');const before=await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord.hash;');
+  await assert.rejects(command('./tab-tamer',['apply','--config',join(work,'invalid.toml'),'--user-data-dir',profile]));assert.equal(await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord.hash;'),before);
+ });
+ await check('CLI status verifies persisted hash',async()=>{assert.match(await command('./tab-tamer',['status','--user-data-dir',profile]),/status: verified/);});
+ const savedHash=await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord.hash;');
+ await stop();await start();
+ await check('configuration survives browser restart',async()=>{assert.equal(await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord.hash;'),savedHash);assert.match(await command('./tab-tamer',['status','--user-data-dir',profile]),/status: verified/);const id=await evaluate(`return (await chrome.tabs.create({url:${json(base+'/target?restart=1')},active:false})).id;`);await delay(1200);assert.notEqual((await tabs()).find(t=>t.id===id).groupId,-1);});
+ await writeFile(join(work,'results.json'),JSON.stringify(results,null,2));console.log('Results:',join(work,'results.json'));
+}catch(e){console.error(e);results.push({ok:false,error:String(e)});try{await writeFile(join(work,'failure.json'),JSON.stringify({results,events:await evaluate('return globalThis.testEvents;'),windows:await evaluate('return await chrome.windows.getAll({});'),tabs:await tabs(),logs:await evaluate('return await chrome.storage.session.get("logs");')},null,2));}catch{}process.exitCode=1;
+}finally{releaseSlow?.();await stop();server.close();}

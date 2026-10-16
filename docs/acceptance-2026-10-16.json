@@ -1,0 +1,84 @@
+{
+  "date": "2026-10-16",
+  "browser": "Brave 155.1.97.57",
+  "mode": "visible isolated profile, only Tab Tamer installed",
+  "unit_tests_passed": 23,
+  "browser_checks": [
+    {
+      "name": "signed CLI apply without manual reload",
+      "ok": true
+    },
+    {
+      "name": "automatic grouping",
+      "ok": true
+    },
+    {
+      "name": "foreground duplicate expands collapsed group and reuses old tab",
+      "ok": true
+    },
+    {
+      "name": "background duplicate preserves selection and collapsed group",
+      "ok": true
+    },
+    {
+      "name": "cross-window foreground reuses target window",
+      "ok": true
+    },
+    {
+      "name": "user switch during redirect is not overridden",
+      "ok": true
+    },
+    {
+      "name": "existing-tab navigation is never deduplicated",
+      "ok": true
+    },
+    {
+      "name": "rapid new duplicates leave one survivor",
+      "ok": true
+    },
+    {
+      "name": "query and fragment remain distinct",
+      "ok": true
+    },
+    {
+      "name": "browser link opens a new tab and reuses the existing page",
+      "ok": true
+    },
+    {
+      "name": "external browser command reuses existing page",
+      "ok": true
+    },
+    {
+      "name": "macOS open launch reuses existing page",
+      "ok": true
+    },
+    {
+      "name": "config apply updates existing group metadata without reload",
+      "ok": true
+    },
+    {
+      "name": "invalid config never reaches browser",
+      "ok": true
+    },
+    {
+      "name": "CLI status verifies persisted hash",
+      "ok": true
+    },
+    {
+      "name": "configuration survives browser restart",
+      "ok": true
+    }
+  ],
+  "source_sha256": {
+    "extension/apply.html": "309de6e0d350b7122c2ba06e1f3c44bb7220850a1eb70a251e850bf80e0771eb",
+    "extension/apply.js": "6fbecbcf09a2fbfda4d0c6ec9e6d1a64f867381fef0510849a613194dbfdf374",
+    "extension/auth.js": "7668798f5914057cabaf0caf24b40e780a4ae5c7222016ad900d017dcd94d939",
+    "extension/engine.js": "7f55acde738c5fac7cce92d7c2ab5ac25fa9f8c742cfcfb43df3a51a30733cac",
+    "extension/manifest.json": "c87a92a8a11fd8f215795ef0717d206a573de0fba361d49eccb2d1359d86ddff",
+    "extension/policy.js": "0593b90c7b78e78b23655351eb5e4e969b7e6e30ce1bd725e9eea0c8bf440fd9",
+    "extension/status.html": "f46d8e04fa74fab0e1ef3b7fc4d846da4caef26559a054f35ecf9d1e82e732fb",
+    "extension/status.js": "628bdb23f813c8689ec62e01426f0e63fece8f7ea1041e99d3753e5b34af3108",
+    "extension/style.css": "c528981a61a764924c10a2efe5557264c945cf93a95e364c829db0c930bf956a",
+    "extension/worker.js": "fb2dae50a787cb521402cb6a9cb7ab4633a5ad8afdb5885eb221b3325da42b02"
+  }
+}

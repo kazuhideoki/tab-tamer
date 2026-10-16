@@ -1,0 +1,9 @@
+{
+  "manifest_version":3,"name":"Tab Tamer","version":"0.1.0",
+  "description":"Personal rule-based tab grouping and new-tab duplicate prevention.",
+  "minimum_chrome_version":"121","incognito":"not_allowed",
+  "permissions":["tabs","tabGroups","storage","webNavigation"],
+  "host_permissions":["http://127.0.0.1/*"],
+  "background":{"service_worker":"worker.js","type":"module"},
+  "action":{"default_title":"Tab Tamer","default_popup":"status.html"}
+}

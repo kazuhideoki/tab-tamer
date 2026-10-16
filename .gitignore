@@ -1,0 +1,6 @@
+/config.toml
+/dist/
+/.tab-tamer/
+/.test-artifacts/
+__pycache__/
+*.pyc

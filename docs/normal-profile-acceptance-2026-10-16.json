@@ -1,0 +1,52 @@
+{
+  "date": "2026-10-16",
+  "profile": "Default",
+  "extensions": {
+    "Tab Tamer": "enabled",
+    "Duplicate Tabs Closer 4.3.5": "disabled",
+    "Auto-Group Tabs 0.0.24": "disabled"
+  },
+  "personal_group_count": 8,
+  "personal_configuration_hash_verified": true,
+  "checks": [
+    {
+      "name": "same-window foreground",
+      "ok": true
+    },
+    {
+      "name": "background preserves selection",
+      "ok": true
+    },
+    {
+      "name": "cross-window foreground",
+      "ok": true
+    },
+    {
+      "name": "external macOS link",
+      "ok": true
+    },
+    {
+      "name": "user switch during redirect",
+      "ok": true
+    },
+    {
+      "name": "existing-tab navigation retained",
+      "ok": true
+    },
+    {
+      "name": "personal config restored",
+      "ok": true
+    },
+    {
+      "name": "original tabs preserved",
+      "ok": true
+    }
+  ],
+  "group_checks": {
+    "automatic_grouping": true,
+    "background_preserves_collapsed": true,
+    "foreground_expands_collapsed": true
+  },
+  "normal_browser_restarted": false,
+  "apple_events_javascript_enabled": false
+}

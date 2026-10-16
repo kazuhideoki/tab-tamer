@@ -1,0 +1,30 @@
+version = 1
+
+[dedup]
+enabled = true
+scope = "all_windows"
+ignore_hash = false
+ignore_query = false
+ignore_www = false
+case_insensitive = false
+prefer_https = true
+ignore_trailing_slash = true
+keep_pinned = true
+settle_ms = 200
+new_tab_timeout_ms = 15000
+exclude = []
+
+[focus]
+foreground = true
+expand_group = true
+
+[grouping]
+enabled = true
+preserve_manual = true
+
+[[groups]]
+id = "example"
+name = "Example"
+color = "blue"
+urls = ["https://example.com/*"]
+strict = false

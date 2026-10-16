@@ -1,0 +1,138 @@
+{
+  "date": "2026-10-16",
+  "unit_tests_passed": 28,
+  "isolated_browser_checks": [
+    {
+      "name": "signed CLI apply without manual reload",
+      "ok": true
+    },
+    {
+      "name": "automatic grouping",
+      "ok": true
+    },
+    {
+      "name": "foreground duplicate expands collapsed group and reuses old tab",
+      "ok": true
+    },
+    {
+      "name": "discarded grouped target is reused",
+      "ok": true
+    },
+    {
+      "name": "initial same-URL history update reuses grouped target",
+      "ok": true
+    },
+    {
+      "name": "background duplicate preserves selection and collapsed group",
+      "ok": true
+    },
+    {
+      "name": "cross-window foreground reuses target window",
+      "ok": true
+    },
+    {
+      "name": "user switch during redirect is not overridden",
+      "ok": true
+    },
+    {
+      "name": "existing-tab navigation is never deduplicated",
+      "ok": true
+    },
+    {
+      "name": "rapid new duplicates leave one survivor",
+      "ok": true
+    },
+    {
+      "name": "query and fragment remain distinct",
+      "ok": true
+    },
+    {
+      "name": "browser link opens a new tab and reuses the existing page",
+      "ok": true
+    },
+    {
+      "name": "external browser command reuses existing page",
+      "ok": true
+    },
+    {
+      "name": "macOS open launch reuses existing page",
+      "ok": true
+    },
+    {
+      "name": "config apply updates existing group metadata without reload",
+      "ok": true
+    },
+    {
+      "name": "invalid config never reaches browser",
+      "ok": true
+    },
+    {
+      "name": "CLI status verifies persisted hash",
+      "ok": true
+    },
+    {
+      "name": "configuration survives browser restart",
+      "ok": true
+    }
+  ],
+  "source_sha256": {
+    "extension/engine.js": "c7eab22849021396fc2f8f554a37aebd1614cfc07fff20495dd365e6d7e9e1d6",
+    "extension/worker.js": "8cf7c87e1669370de6aa323b46882e29ef11d822bb909f2d72ca1d5818673a6c",
+    "extension/policy.js": "0593b90c7b78e78b23655351eb5e4e969b7e6e30ce1bd725e9eea0c8bf440fd9",
+    "tests/engine.test.mjs": "57efd48533a436bdf318a223142b5d306b55e781734d9282b79d4e558cf780e4",
+    "tests/browser.mjs": "4cf2521f706eef18b0ff17928395ab23902cd9807ba1e274d53ed1703a69d164"
+  },
+  "note": "GitHub optional isolated case was added after the full 18-case run; GitHub is checked separately in the normal profile.",
+  "normal_profile_loopback_checks": [
+    {
+      "name": "same-window foreground",
+      "ok": true
+    },
+    {
+      "name": "background preserves selection",
+      "ok": true
+    },
+    {
+      "name": "cross-window foreground",
+      "ok": true
+    },
+    {
+      "name": "external macOS link",
+      "ok": true
+    },
+    {
+      "name": "user switch during redirect",
+      "ok": true
+    },
+    {
+      "name": "existing-tab navigation retained",
+      "ok": true
+    },
+    {
+      "name": "personal config restored",
+      "ok": true
+    },
+    {
+      "name": "original tabs preserved",
+      "ok": true
+    }
+  ],
+  "normal_profile_group_ui_check": "Accessibility lookup did not return a group label; this assertion is unverified. The 6 interaction checks before it passed and cleanup restored personal config and preserved original tabs.",
+  "normal_profile_code_reloaded": true,
+  "github_isolated_checks": [
+    {
+      "name": "signed CLI apply without manual reload",
+      "ok": true
+    },
+    {
+      "name": "automatic grouping",
+      "ok": true
+    },
+    {
+      "name": "GitHub expanded group reuses an initially opened repository",
+      "ok": true
+    }
+  ],
+  "normal_profile_personal_config_restored": true,
+  "old_extensions_remain_disabled": true
+}
