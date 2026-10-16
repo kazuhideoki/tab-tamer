@@ -148,3 +148,41 @@ test('user switching while discarded target restores prevents closing',async()=>
  f.api.tabs.update=async(...args)=>{await update(...args);f.tabs.get(1).pendingUrl=f.c.url;setTimeout(()=>f.e.activated({tabId:999,windowId:1}),10);};
  await f.e.deduplicate(f.c);assert.ok(f.tabs.has(2));
 });
+
+
+test('main-document completion waits for tab readiness without a second navigation event',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const f=fixture();f.c.document='initial';
+ f.tabs.get(2).status='loading';f.e.completed({tabId:2,frameId:0,documentId:'initial'});
+ t.mock.timers.tick(200);await f.e.tail;
+ assert.equal(f.e.candidates.get(2),f.c);assert.deepEqual(f.calls,[]);
+ t.mock.timers.tick(200);await f.e.tail;assert.deepEqual(f.calls,[]);
+ f.tabs.get(2).status='complete';t.mock.timers.tick(200);await f.e.tail;
+ assert.ok(!f.tabs.has(2));assert.equal(f.e.candidates.has(2),false);
+});
+test('readiness wait stops after interaction, navigation, removal, or reconfiguration',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ for(const cancel of [f=>f.e.interacted(2),f=>f.e.navigating(2),f=>f.e.removed(2),f=>{f.e.generation++;f.e.candidates.clear();}]){
+  const f=fixture();f.c.document='initial';f.tabs.get(2).status='loading';
+  f.e.completed({tabId:2,frameId:0,documentId:'initial'});t.mock.timers.tick(200);await f.e.tail;
+  cancel(f);f.tabs.get(2).status='complete';t.mock.timers.tick(500);await f.e.tail;
+  assert.deepEqual(f.calls,[]);
+ }
+});
+test('readiness wait is bounded by the original creation deadline',async t=>{
+ t.mock.timers.enable({apis:['setTimeout','Date'],now:100000});const f=fixture();
+ f.c.document='initial';f.tabs.get(2).status='loading';f.e.config.dedup.new_tab_timeout_ms=1000;
+ f.e.completed({tabId:2,frameId:0,documentId:'initial'});
+ for(let i=0;i<5;i++){t.mock.timers.tick(200);await f.e.tail;}
+ assert.equal(f.e.candidates.has(2),false);assert.deepEqual(f.calls,[]);
+ f.tabs.get(2).status='complete';t.mock.timers.tick(200);await f.e.tail;assert.deepEqual(f.calls,[]);
+});
+test('interaction during the asynchronous readiness read cannot revive a candidate',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const f=fixture();f.c.document='initial';f.tabs.get(2).status='loading';
+ const get=f.api.tabs.get;f.api.tabs.get=async id=>{const tab=await get(id);if(id===2)f.e.interacted(2);return tab;};
+ f.e.completed({tabId:2,frameId:0,documentId:'initial'});t.mock.timers.tick(200);await f.e.tail;
+ assert.equal(f.e.candidates.has(2),false);assert.deepEqual(f.calls,[]);
+});
+test('loading after readiness validation prevents closing the source',async()=>{
+ const f=fixture();f.api.tabGroups.update=async()=>{f.tabs.get(2).status='loading';};
+ await f.e.deduplicate(f.c);assert.ok(f.tabs.has(2));assert.deepEqual(f.calls,[]);
+});

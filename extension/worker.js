@@ -28,7 +28,7 @@ chrome.tabs.onUpdated.addListener((id,change)=>{
 chrome.webNavigation.onBeforeNavigate.addListener(d=>{if(d.frameId===0)engine.navigating(d.tabId);});
 chrome.webNavigation.onCommitted.addListener(d=>engine.committed(d));
 chrome.webNavigation.onCompleted.addListener(d=>engine.completed(d));
-chrome.webNavigation.onErrorOccurred.addListener(d=>{if(d.frameId===0){engine.changed(d.tabId);engine.candidates.delete(d.tabId);}});
+chrome.webNavigation.onErrorOccurred.addListener(d=>{if(d.frameId===0){if(engine.candidates.has(d.tabId))engine.trace(d.tabId,'navigation-error');engine.changed(d.tabId);engine.candidates.delete(d.tabId);}});
 for(const event of [chrome.webNavigation.onHistoryStateUpdated,chrome.webNavigation.onReferenceFragmentUpdated])event.addListener(d=>engine.historyUpdated(d));
 chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   const page=(sender.url||'').split(/[?#]/)[0];

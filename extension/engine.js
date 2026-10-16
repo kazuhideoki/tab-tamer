@@ -2,6 +2,7 @@ import {chooseSurvivor,matchGroup,urlKey,webURL} from './policy.js';
 export class Engine {
   constructor(api,log=()=>{}) { this.api=api;this.log=log;this.config=null;this.generation=0;this.tail=Promise.resolve();
     this.candidates=new Map();this.revisions=new Map();this.ranks=new Map();this.sequence=0;this.epoch=0;this.expectedActivation=null;this.expectedFocus=null;this.restoreUntil=0; }
+  trace(id,reason,data={}) {this.log('dedup-decision',{tab:id,reason,...data});}
   enqueue(fn) {const task=this.tail.then(fn);this.tail=task.catch(e=>this.log('error',{message:String(e.message||e).slice(0,180)}));return task;}
   async init() { const tabs=await this.api.tabs.query({});for(const t of tabs)if(!this.ranks.has(t.id))this.ranks.set(t.id,0); }
   async reconcile(previous) {
@@ -19,7 +20,8 @@ export class Engine {
   }
   created(tab) {
     this.ranks.set(tab.id,++this.sequence);
-    if(tab.incognito||tab.discarded||(tab.status==='complete'&&webURL(tab.url))||Date.now()<this.restoreUntil)return;
+    if(tab.incognito||tab.discarded||(tab.status==='complete'&&webURL(tab.url))||Date.now()<this.restoreUntil){this.trace(tab.id,'creation-ineligible',{incognito:!!tab.incognito,discarded:!!tab.discarded,alreadyComplete:tab.status==='complete'&&webURL(tab.url),startupGuard:Date.now()<this.restoreUntil});return;}
+    this.trace(tab.id,'candidate-created');
     this.candidates.set(tab.id,{id:tab.id,windowId:tab.windowId,created:Date.now(),foreground:tab.active,cancelled:false,firstActivation:true,document:null,revision:0});
   }
   activated(info) {
@@ -40,7 +42,7 @@ export class Engine {
     // Interaction belongs to this tab only. A link opened in a new tab gets its
     // own candidate and is still eligible for duplicate prevention.
     this.changed(id);
-    if(this.candidates.delete(id))this.enqueue(()=>this.group(id));
+    if(this.candidates.delete(id)){this.trace(id,'page-interaction');this.enqueue(()=>this.group(id));}
   }
   navigating(id) {
     this.changed(id);const c=this.candidates.get(id);
@@ -58,7 +60,7 @@ export class Engine {
       if(c.complete)this.schedule(c);
       return;
     }
-    this.changed(d.tabId);this.candidates.delete(d.tabId);
+    this.changed(d.tabId);if(c)this.trace(d.tabId,'history-ineligible',{sameDocument:c.document===d.documentId});this.candidates.delete(d.tabId);
     this.enqueue(()=>this.group(d.tabId));
   }
   committed(d) {
@@ -66,7 +68,7 @@ export class Engine {
     this.changed(d.tabId);const c=this.candidates.get(d.tabId);if(!c)return;
     if(!webURL(d.url))return;
     if(['reload','form_submit'].includes(d.transitionType)||d.transitionQualifiers?.includes('forward_back') ||
-      (c.document&&!d.transitionQualifiers?.includes('client_redirect'))){this.candidates.delete(d.tabId);return;}
+      (c.document&&!d.transitionQualifiers?.includes('client_redirect'))){this.trace(d.tabId,'commit-ineligible',{transition:d.transitionType,qualifiers:d.transitionQualifiers||[],hadDocument:!!c.document});this.candidates.delete(d.tabId);return;}
     clearTimeout(c.timer);c.complete=false;c.navigating=false;
     c.document=d.documentId;c.url=d.url;c.revision=this.revisions.get(d.tabId);
   }
@@ -75,37 +77,49 @@ export class Engine {
     const c=this.candidates.get(d.tabId);
     if(!c||!c.document||c.document!==d.documentId){this.enqueue(()=>this.group(d.tabId));return;}
     if(c.navigating)return;
-    c.complete=true;this.schedule(c);
+    this.trace(d.tabId,'load-completed',{ageMs:Date.now()-c.created});c.complete=true;this.schedule(c);
   }
-  schedule(c) {
+  schedule(c,minDelay=0) {
     clearTimeout(c.timer);
     const generation=this.generation,revision=c.revision;
     const remaining=c.created+(this.config?.dedup.new_tab_timeout_ms??15000)-Date.now();
-    const settle=this.config?.dedup.settle_ms??200;
+    const settle=Math.max(this.config?.dedup.settle_ms??200,minDelay);
     c.timer=setTimeout(()=>this.enqueue(async()=>{
       if(this.candidates.get(c.id)!==c||!c.complete||c.revision!==revision)return;
+      const source=await this.get(c.id);
+      // Completion of the main document can precede tabs.status becoming
+      // complete (for example while an artifact iframe is still loading).
+      // Keep the candidate until the tab is ready, but never revive a candidate
+      // invalidated by input, navigation, removal, or configuration changes.
+      if(this.candidates.get(c.id)!==c||!c.complete||c.revision!==revision||
+         this.revisions.get(c.id)!==revision||generation!==this.generation)return;
+      if(source?.status==='loading'&&source.url===c.url&&!source.pendingUrl&&
+         Date.now()+settle<c.created+(this.config?.dedup.new_tab_timeout_ms??15000)) {
+        this.trace(c.id,'waiting-for-tab-complete');
+        this.schedule(c,50);return;
+      }
       // Freeze the destination before asynchronous focus/close operations. A
       // later URL change must invalidate this attempt, never retarget it.
       this.candidates.delete(c.id);
-      try {if(remaining>=settle&&generation===this.generation)await this.deduplicate({...c});}finally{await this.group(c.id);}
+      try {if(remaining>=settle&&generation===this.generation)await this.deduplicate({...c},source);else this.trace(c.id,'schedule-expired-or-reconfigured',{ageMs:Date.now()-c.created});}finally{await this.group(c.id);}
     }),Math.max(0,Math.min(settle,remaining)));
   }
   async get(id){try{return await this.api.tabs.get(id);}catch{return null;}}
   async valid(c,targetId,key,generation) {
     if(generation!==this.generation||this.revisions.get(c.id)!==c.revision)return null;
     const s=await this.get(c.id),t=await this.get(targetId);
-    if(!s||!t||s.pinned||s.audible||s.splitViewId>=0||s.incognito||t.incognito||s.pendingUrl||t.pendingUrl||s.url!==c.url||
+    if(!s||!t||s.status!=='complete'||s.pinned||s.audible||s.splitViewId>=0||s.incognito||t.incognito||s.pendingUrl||t.pendingUrl||s.url!==c.url||
        urlKey(s.url,this.config)!==key||urlKey(t.url,this.config)!==key)return null;
     return {s,t};
   }
-  async deduplicate(c) {
-    const config=this.config;if(!config?.dedup.enabled||Date.now()-c.created>config.dedup.new_tab_timeout_ms)return;
-    const source=await this.get(c.id);if(!source||source.pinned||source.audible||source.splitViewId>=0||source.url!==c.url||source.status!=='complete')return;
+  async deduplicate(c,source) {
+    const config=this.config;if(!config?.dedup.enabled||Date.now()-c.created>config.dedup.new_tab_timeout_ms){this.trace(c.id,'disabled-or-expired',{ageMs:Date.now()-c.created});return;}
+    if(source===undefined)source=await this.get(c.id);if(!source||source.pinned||source.audible||source.splitViewId>=0||source.url!==c.url||source.status!=='complete'){this.trace(c.id,'source-ineligible',{exists:!!source,pinned:!!source?.pinned,audible:!!source?.audible,splitView:source?.splitViewId>=0,sameURL:source?.url===c.url,status:source?.status});return;}
     const windows=new Map((await this.api.windows.getAll({})).map(w=>[w.id,w]));if(windows.get(source.windowId)?.type!=='normal')return;
     const tabs=(await this.api.tabs.query({})).map(t=>({...t,windowType:windows.get(t.windowId)?.type}));
-    const target=chooseSurvivor(source,tabs,config,id=>this.ranks.get(id)??0);if(!target)return;
+    const target=chooseSurvivor(source,tabs,config,id=>this.ranks.get(id)??0);if(!target){this.trace(c.id,'no-eligible-target',{sameURLTabs:tabs.filter(t=>t.id!==c.id&&urlKey(t.url,config)===urlKey(source.url,config)).map(t=>({tab:t.id,status:t.status,pending:!!t.pendingUrl,discarded:!!t.discarded,older:(this.ranks.get(t.id)??0)<(this.ranks.get(c.id)??0),normalWindow:t.windowType==='normal',sameWindow:t.windowId===source.windowId,incognito:!!t.incognito}))});return;}
     const generation=this.generation,key=urlKey(source.url,config),epoch=this.epoch;
-    let pair=await this.valid(c,target.id,key,generation);if(!pair)return;
+    let pair=await this.valid(c,target.id,key,generation);if(!pair){this.trace(c.id,'validation-failed',{revisionChanged:this.revisions.get(c.id)!==c.revision});return;}
     const wantsFocus=config.focus.foreground&&c.foreground&&!c.cancelled&&pair.s.active&&windows.get(pair.s.windowId)?.focused;
     // A background-created tab selected later belongs to the user now: retain it.
     if(pair.s.active&&!wantsFocus){this.log('retain-active',{tab:c.id,foreground:!!c.foreground,cancelled:!!c.cancelled,windowFocused:!!windows.get(pair.s.windowId)?.focused});return;}
@@ -138,7 +152,7 @@ export class Engine {
           }
         }
       }
-      pair=await this.valid(c,target.id,key,generation);if(!pair)return;
+      pair=await this.valid(c,target.id,key,generation);if(!pair){this.trace(c.id,'validation-failed',{revisionChanged:this.revisions.get(c.id)!==c.revision});return;}
       if(wantsFocus) {
         if(this.epoch!==epoch||!pair.t.active||!(await this.api.windows.get(pair.t.windowId)).focused||this.epoch!==epoch)return;
       } else if(pair.s.active)return;
