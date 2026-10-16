@@ -8,12 +8,26 @@ const brave='/Applications/Brave Browser.app/Contents/MacOS/Brave Browser';const
 const delay=ms=>new Promise(r=>setTimeout(r,ms));let browser,ws,workerSession;let seq=0;const requests=new Map();const results=[];
 function command(cmd,args){return new Promise((resolve,reject)=>{const p=spawn(cmd,args,{cwd:root,stdio:['ignore','pipe','pipe']});let out='',err='';p.stdout.on('data',b=>out+=b);p.stderr.on('data',b=>err+=b);p.on('error',reject);p.on('exit',code=>code===0?resolve(out):reject(Error(`${cmd}: ${err||out}`)));});}
 let slowGate=Promise.resolve(),releaseSlow;
+let interactionGate=Promise.resolve(),releaseInteraction;
 const server=http.createServer((req,res)=>{
  if(!headed&&req.url==='/test-open'&&req.method==='POST'){
   let body='';req.on('data',b=>body+=b);req.on('end',async()=>{
    try{const {url}=JSON.parse(body);assert.ok(url.startsWith(`chrome-extension://${identity.id}/apply.html#`));await rpc('Target.createTarget',{url});res.end('ok');}
    catch(e){res.statusCode=400;res.end(String(e));}
   });return;
+ }
+ if(req.url.startsWith('/interaction-asset')){interactionGate.then(()=>{res.writeHead(204);res.end();});return;}
+ if(req.url.startsWith('/initial-server')){res.writeHead(302,{Location:'/initial-client'});res.end();return;}
+ if(req.url.startsWith('/initial-client')){res.setHeader('Content-Type','text/html');res.end('<!doctype html><script>setTimeout(()=>location.replace("/initial-spa?kind=route"),100)</script>');return;}
+ if(req.url.startsWith('/initial-spa')){
+  const kind=new URL(req.url,'http://localhost').searchParams.get('kind');
+  const final=kind==='hash'?'/target#initial':`/target?initial=${kind}`;
+  const script=kind==='delayed'?`onload=()=>{setTimeout(()=>history.replaceState({},"","/intermediate"),200);setTimeout(()=>history.replaceState({},"",${JSON.stringify(final)}),400)}`:`history.replaceState({},"",${JSON.stringify(final)})`;
+  res.setHeader('Content-Type','text/html');res.end(`<!doctype html><title>Initial SPA</title><script>${script}</script>`);return;
+ }
+ if(req.url.startsWith('/interactive')){
+  const mode=new URL(req.url,'http://localhost').searchParams.get('mode');
+  res.setHeader('Content-Type','text/html');res.end(`<!doctype html><title>User navigation</title><a id="navigate" href="${mode==='new'?'/initial-server':'/target'}" ${mode==='new'?'target="_blank"':''}>Navigate</a><img src="/interaction-asset">${mode==='spa'?'<script>document.querySelector("a").onclick=e=>{e.preventDefault();history.pushState({},"","/target")}</script>':''}`);return;
  }
  if(req.url.startsWith('/slow')){slowGate.then(()=>{res.writeHead(302,{Location:'/target'});res.end();});return;}
  if(req.url.startsWith('/target-spa')){res.setHeader('Content-Type','text/html');res.end('<!doctype html><title>SPA initial state</title><script>history.replaceState({ready:true},"",location.href)</script>');return;}
@@ -56,6 +70,16 @@ async function focusBrowser(){
  await command('osascript',['-e',`tell application "System Events" to set frontmost of (first application process whose unix id is ${browser.pid}) to true`]);
  await delay(300);
 }
+async function clickLink(url){
+ const {targetInfos}=await rpc('Target.getTargets');const page=targetInfos.find(t=>t.type==='page'&&t.url===url);assert.ok(page);
+ const {sessionId}=await rpc('Target.attachToTarget',{targetId:page.targetId,flatten:true});
+ try {
+  const box=await rpc('Runtime.evaluate',{expression:'(()=>{const r=document.querySelector("#navigate").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()',returnByValue:true},sessionId);
+  const {x,y}=box.result.value;
+  await rpc('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button:'left',clickCount:1},sessionId);
+  await rpc('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button:'left',clickCount:1},sessionId);
+ }finally{await rpc('Target.detachFromTarget',{sessionId});}
+}
 async function check(name,fn){const match=process.env.TAB_TAMER_TEST_MATCH;if(match&&!/signed CLI|automatic grouping/.test(name)&&!new RegExp(match).test(name)){console.log('SKIP',name);return;}console.log('RUN',name);await focusBrowser();await fn();results.push({name,ok:true});console.log('PASS',name);}
 const json=JSON.stringify;let target,other,window1;
 try{
@@ -97,6 +121,46 @@ try{
   await evaluate(`await chrome.tabs.update(${other},{url:${json(url)},active:true});`);await delay(1000);
   assert.ok((await tabs()).some(t=>t.id===other),'existing-tab navigation remains allowed');
   await evaluate(`await chrome.tabs.update(${other},{url:${json(base+'/other')}});await chrome.tabs.remove(${first});`);await delay(600);
+ });
+ await check('automatic initial SPA URL changes reuse final foreground and background targets',async()=>{
+  for(const kind of ['route','hash','delayed']){
+   const url=base+(kind==='hash'?'/target#initial':`/target?initial=${kind}`);
+   const first=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(url)},active:false})).id;`);await delay(700);
+   // Background page timers are throttled by Brave, so a post-load timer can
+   // legitimately run after the initial settling window has already ended.
+   for(const active of kind==='delayed'?[true]:[true,false]){
+    await focusBrowser();await evaluate(`await chrome.tabs.update(${other},{active:true});`);
+    const second=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(base+'/initial-spa?kind='+kind)},active:${active}})).id;`);await delay(1400);
+    const all=await tabs();assert.ok(!all.some(t=>t.id===second),`${kind}, active=${active}`);
+    assert.ok(all.find(t=>t.id===(active?first:other)).active);
+   }
+   await evaluate(`await chrome.tabs.update(${other},{active:true});await chrome.tabs.remove(${first});`);
+  }
+ });
+ await check('HTTP and client redirect chain reuses the final SPA destination',async()=>{
+  const first=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(base+'/target?initial=route')},active:false})).id;`);await delay(700);
+  const second=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(base+'/initial-server')},active:true})).id;`);await delay(1600);
+  assert.ok(!(await tabs()).some(t=>t.id===second));assert.ok((await tabs()).find(t=>t.id===first).active);
+  await evaluate(`await chrome.tabs.update(${other},{active:true});await chrome.tabs.remove(${first});`);
+ });
+ for(const mode of ['link','spa'])await check(`trusted same-tab ${mode} navigation during initial loading retains duplicates`,async()=>{
+  interactionGate=new Promise(resolve=>{releaseInteraction=resolve;});const url=base+'/interactive?mode='+mode;
+  const n=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(url)},active:true})).id;`);await delay(400);
+  assert.equal((await tabs()).find(t=>t.id===n)?.status,'loading');await clickLink(url);releaseInteraction();await delay(1100);
+  assert.equal((await tabs()).find(t=>t.id===n)?.url,base+'/target');
+  await evaluate(`await chrome.tabs.update(${other},{active:true});await chrome.tabs.remove(${n});`);
+ });
+ await check('trusted link opening a new tab still deduplicates after redirects',async()=>{
+  const first=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(base+'/target?initial=route')},active:false})).id;`);await delay(700);
+  interactionGate=new Promise(resolve=>{releaseInteraction=resolve;});const url=base+'/interactive?mode=new';
+  const opener=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(url)},active:true})).id;`);await delay(400);
+  await clickLink(url);releaseInteraction();await delay(1600);
+  const all=await tabs();assert.ok(all.some(t=>t.id===opener));assert.equal(all.filter(t=>t.url===base+'/target?initial=route').length,1);assert.ok(all.find(t=>t.id===first).active);
+  await evaluate(`await chrome.tabs.update(${other},{active:true});await chrome.tabs.remove([${opener},${first}]);`);
+ });
+ await check('explicit tab duplication retains the copied tab',async()=>{
+  const copy=await evaluate(`return (await chrome.tabs.duplicate(${target})).id;`);await delay(1100);
+  assert.ok((await tabs()).some(t=>t.id===copy));await evaluate(`await chrome.tabs.update(${other},{active:true});await chrome.tabs.remove(${copy});`);
  });
  await check('background duplicate preserves selection and collapsed group',async()=>{
   const g=(await tabs()).find(t=>t.id===target).groupId;await evaluate(`await chrome.tabs.update(${other},{active:true});await chrome.tabGroups.update(${g},{collapsed:true});`);
@@ -175,4 +239,4 @@ try{
  await writeFile(join(work,'run.json'),JSON.stringify({mode:headed?'headed':'headless',osFocusChecksEnabled:headed,skipped:headed?[]:['external browser command reuses existing page','macOS open launch reuses existing page']},null,2));
  await writeFile(join(work,'results.json'),JSON.stringify(results,null,2));console.log('Results:',join(work,'results.json'));
 }catch(e){console.error(e);results.push({ok:false,error:String(e)});try{await writeFile(join(work,'failure.json'),JSON.stringify({results,events:await evaluate('return globalThis.testEvents;'),windows:await evaluate('return await chrome.windows.getAll({});'),tabs:await tabs(),logs:await evaluate('return await chrome.storage.session.get("logs");')},null,2));}catch{}process.exitCode=1;
-}finally{releaseSlow?.();await stop();server.close();}
+}finally{releaseSlow?.();releaseInteraction?.();await stop();server.close();}

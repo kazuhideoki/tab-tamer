@@ -25,7 +25,7 @@ chrome.tabs.onUpdated.addListener((id,change)=>{
   if(change.url && engine.candidates.get(id)?.url!==change.url)engine.changed(id);
   if(change.status==='complete'&&!engine.candidates.has(id))engine.enqueue(()=>engine.group(id));
 });
-chrome.webNavigation.onBeforeNavigate.addListener(d=>{if(d.frameId===0)engine.changed(d.tabId);});
+chrome.webNavigation.onBeforeNavigate.addListener(d=>{if(d.frameId===0)engine.navigating(d.tabId);});
 chrome.webNavigation.onCommitted.addListener(d=>engine.committed(d));
 chrome.webNavigation.onCompleted.addListener(d=>engine.completed(d));
 chrome.webNavigation.onErrorOccurred.addListener(d=>{if(d.frameId===0){engine.changed(d.tabId);engine.candidates.delete(d.tabId);}});
@@ -33,6 +33,9 @@ for(const event of [chrome.webNavigation.onHistoryStateUpdated,chrome.webNavigat
 chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   const page=(sender.url||'').split(/[?#]/)[0];
   if(sender.id!==chrome.runtime.id)return;
+  if(message?.type==='page-interaction'&&sender.tab) {
+    engine.interacted(sender.tab.id);return;
+  }
   if(message?.type==='status'&&page===chrome.runtime.getURL('status.html')) {
     ready.then(()=>reply({configured:!!record,hash:record?.hash,appliedAt:record?.appliedAt,groups:record?.config.groups.length,logs}));return true;
   }

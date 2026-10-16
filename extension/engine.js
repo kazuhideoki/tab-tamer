@@ -36,13 +36,28 @@ export class Engine {
   }
   removed(id) {this.candidates.delete(id);this.ranks.delete(id);this.revisions.delete(id);}
   changed(id) {this.revisions.set(id,(this.revisions.get(id)||0)+1);}
+  interacted(id) {
+    // Interaction belongs to this tab only. A link opened in a new tab gets its
+    // own candidate and is still eligible for duplicate prevention.
+    this.changed(id);
+    if(this.candidates.delete(id))this.enqueue(()=>this.group(id));
+  }
+  navigating(id) {
+    this.changed(id);const c=this.candidates.get(id);
+    if(c){clearTimeout(c.timer);c.complete=false;c.navigating=true;}
+  }
   historyUpdated(d) {
     if(d.frameId!==0)return;
     const c=this.candidates.get(d.tabId);
-    // SPA initialization can update history state without navigating anywhere.
-    // Preserve only this exact document and URL; query/hash/route changes still
-    // end eligibility, even when URL normalization would consider them equal.
-    if(c?.document&&c.document===d.documentId&&c.url===d.url)return;
+    // Follow automatic SPA initialization within the initial document. Trusted
+    // page interaction ends eligibility via a separate early capture listener.
+    if(c?.document&&c.document===d.documentId&&webURL(d.url)&&
+       !d.transitionQualifiers?.includes('forward_back')) {
+      if(c.url===d.url)return;
+      this.changed(d.tabId);c.url=d.url;c.revision=this.revisions.get(d.tabId);
+      if(c.complete)this.schedule(c);
+      return;
+    }
     this.changed(d.tabId);this.candidates.delete(d.tabId);
     this.enqueue(()=>this.group(d.tabId));
   }
@@ -52,17 +67,28 @@ export class Engine {
     if(!webURL(d.url))return;
     if(['reload','form_submit'].includes(d.transitionType)||d.transitionQualifiers?.includes('forward_back') ||
       (c.document&&!d.transitionQualifiers?.includes('client_redirect'))){this.candidates.delete(d.tabId);return;}
+    clearTimeout(c.timer);c.complete=false;c.navigating=false;
     c.document=d.documentId;c.url=d.url;c.revision=this.revisions.get(d.tabId);
   }
   completed(d) {
     if(d.frameId!==0)return;
     const c=this.candidates.get(d.tabId);
     if(!c||!c.document||c.document!==d.documentId){this.enqueue(()=>this.group(d.tabId));return;}
-    // Consume eligibility before waiting; subsequent navigation invalidates revision.
-    if(c.scheduled)return;c.scheduled=true;const generation=this.generation;
-    setTimeout(()=>this.enqueue(async()=>{
-      try {if(generation===this.generation)await this.deduplicate(c);}finally{if(this.candidates.get(c.id)===c)this.candidates.delete(c.id);await this.group(c.id);}
-    }),this.config?.dedup.settle_ms??200);
+    if(c.navigating)return;
+    c.complete=true;this.schedule(c);
+  }
+  schedule(c) {
+    clearTimeout(c.timer);
+    const generation=this.generation,revision=c.revision;
+    const remaining=c.created+(this.config?.dedup.new_tab_timeout_ms??15000)-Date.now();
+    const settle=this.config?.dedup.settle_ms??200;
+    c.timer=setTimeout(()=>this.enqueue(async()=>{
+      if(this.candidates.get(c.id)!==c||!c.complete||c.revision!==revision)return;
+      // Freeze the destination before asynchronous focus/close operations. A
+      // later URL change must invalidate this attempt, never retarget it.
+      this.candidates.delete(c.id);
+      try {if(remaining>=settle&&generation===this.generation)await this.deduplicate({...c});}finally{await this.group(c.id);}
+    }),Math.max(0,Math.min(settle,remaining)));
   }
   async get(id){try{return await this.api.tabs.get(id);}catch{return null;}}
   async valid(c,targetId,key,generation) {

@@ -65,12 +65,73 @@ test('same-document same-URL history state update preserves new-tab deduplicatio
  assert.equal(f.e.candidates.get(2),f.c);assert.equal(f.e.revisions.get(2),f.c.revision);
  await f.e.deduplicate(f.c);assert.ok(!f.tabs.has(2));
 });
-test('SPA route, query and fragment navigation invalidate even scheduled deduplication',async()=>{
+test('initial automatic SPA route, query and fragment changes deduplicate the final URL',async()=>{
  for(const suffix of ['/next','?q=1','#section']){
-  const f=fixture();f.c.document='initial';f.c.scheduled=true;
-  f.e.historyUpdated({tabId:2,frameId:0,documentId:'initial',url:f.c.url+suffix});
-  assert.equal(f.e.candidates.has(2),false);await f.e.deduplicate(f.c);assert.ok(f.tabs.has(2));
+  const f=fixture();f.c.document='initial';const url=f.c.url+suffix;
+  f.tabs.get(1).url=url;f.tabs.get(2).url=url;f.e.changed(2);
+  f.e.historyUpdated({tabId:2,frameId:0,documentId:'initial',url});
+  assert.equal(f.e.candidates.get(2),f.c);assert.equal(f.c.url,url);
+  await f.e.deduplicate(f.c);assert.ok(!f.tabs.has(2));
  }
+});
+test('interaction ends initial eligibility and invalidates an in-flight closure',async()=>{
+ const f=fixture();f.c.document='initial';
+ f.api.tabGroups.update=async()=>f.e.interacted(2);
+ await f.e.deduplicate(f.c);assert.ok(f.tabs.has(2));assert.equal(f.e.candidates.has(2),false);
+ f.e.historyUpdated({tabId:2,frameId:0,documentId:'initial',url:f.c.url+'/next'});
+ assert.equal(f.e.candidates.has(2),false);
+});
+test('interaction in the opener does not exempt a newly opened tab',async()=>{
+ const f=fixture();f.e.interacted(1);await f.e.deduplicate(f.c);assert.ok(!f.tabs.has(2));
+});
+test('interaction cancelling a scheduled duplicate check still groups the retained tab',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const f=fixture();f.c.document='initial';const grouped=[];
+ f.e.group=async id=>grouped.push(id);
+ f.e.completed({tabId:2,frameId:0,documentId:'initial'});f.e.interacted(2);await f.e.tail;
+ assert.deepEqual(grouped,[2]);t.mock.timers.tick(200);await f.e.tail;assert.ok(f.tabs.has(2));
+});
+test('history restoration and different-document history events end eligibility',()=>{
+ for(const detail of [{documentId:'other'},{documentId:'initial',transitionQualifiers:['forward_back']}]){
+  const f=fixture();f.c.document='initial';
+  f.e.historyUpdated({tabId:2,frameId:0,url:f.c.url,...detail});assert.equal(f.e.candidates.has(2),false);
+ }
+});
+test('URL changes after completion restart the settling period',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const f=fixture();f.c.document='initial';
+ f.e.completed({tabId:2,frameId:0,documentId:'initial'});t.mock.timers.tick(150);
+ const url=f.c.url+'?canonical=1';f.tabs.get(1).url=url;f.tabs.get(2).url=url;f.e.changed(2);
+ f.e.historyUpdated({tabId:2,frameId:0,documentId:'initial',url});
+ t.mock.timers.tick(100);await f.e.tail;assert.ok(f.tabs.has(2));
+ t.mock.timers.tick(100);await f.e.tail;assert.ok(!f.tabs.has(2));
+});
+test('client redirect waits for the final document to complete',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const f=fixture();f.c.document='initial';
+ f.e.completed({tabId:2,frameId:0,documentId:'initial'});t.mock.timers.tick(100);
+ f.e.navigating(2);t.mock.timers.tick(300);await f.e.tail;assert.ok(f.tabs.has(2));
+ f.e.completed({tabId:2,frameId:0,documentId:'initial'});t.mock.timers.tick(300);await f.e.tail;assert.ok(f.tabs.has(2));assert.ok(f.e.candidates.has(2));
+ f.e.committed({tabId:2,frameId:0,documentId:'redirect',url:f.c.url,transitionType:'link',transitionQualifiers:['client_redirect']});
+ f.e.completed({tabId:2,frameId:0,documentId:'initial'});t.mock.timers.tick(300);await f.e.tail;assert.ok(f.tabs.has(2));
+ f.e.completed({tabId:2,frameId:0,documentId:'redirect'});t.mock.timers.tick(200);await f.e.tail;assert.ok(!f.tabs.has(2));
+});
+test('queued settling attempt cannot consume an updated destination',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const f=fixture();f.c.document='initial';
+ let release;f.e.enqueue(()=>new Promise(resolve=>{release=resolve;}));await Promise.resolve();
+ f.e.completed({tabId:2,frameId:0,documentId:'initial'});t.mock.timers.tick(200);
+ const url=f.c.url+'?canonical=1';f.tabs.get(1).url=url;f.tabs.get(2).url=url;
+ f.e.historyUpdated({tabId:2,frameId:0,documentId:'initial',url});
+ release();await f.e.tail;assert.ok(f.tabs.has(2));
+ t.mock.timers.tick(200);await f.e.tail;assert.ok(!f.tabs.has(2));
+});
+test('expired initial settling retains the tab',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const f=fixture();f.c.document='initial';f.c.created=0;
+ f.e.completed({tabId:2,frameId:0,documentId:'initial'});t.mock.timers.tick(1);await f.e.tail;
+ assert.ok(f.tabs.has(2));assert.equal(f.e.candidates.has(2),false);
+});
+test('the deadline never shortens the required URL settling period',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const f=fixture();f.c.document='initial';
+ f.c.created=Date.now()-f.e.config.dedup.new_tab_timeout_ms+100;
+ f.e.completed({tabId:2,frameId:0,documentId:'initial'});t.mock.timers.tick(200);await f.e.tail;
+ assert.ok(f.tabs.has(2));assert.equal(f.e.candidates.has(2),false);
 });
 test('history update in existing tabs never creates new-tab eligibility',()=>{
  const f=fixture();f.e.historyUpdated({tabId:1,frameId:0,documentId:'existing',url:f.c.url});
