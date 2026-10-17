@@ -186,3 +186,15 @@ test('loading after readiness validation prevents closing the source',async()=>{
  const f=fixture();f.api.tabGroups.update=async()=>{f.tabs.get(2).status='loading';};
  await f.e.deduplicate(f.c);assert.ok(f.tabs.has(2));assert.deepEqual(f.calls,[]);
 });
+
+test('invalidated settling checks record why the duplicate was retained',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ for(const change of ['revision','configuration']){
+  const f=fixture(),logs=[];f.e.log=(event,data)=>logs.push({event,...data});f.c.document='initial';
+  f.e.completed({tabId:2,frameId:0,documentId:'initial'});
+  if(change==='revision')f.e.changed(2);else f.e.generation++;
+  t.mock.timers.tick(200);await f.e.tail;
+  assert.ok(f.tabs.has(2));assert.deepEqual(f.calls,[]);
+  assert.ok(logs.some(x=>x.reason==='check-invalidated'&&x.revisionChanged===(change==='revision')&&x.reconfigured===(change==='configuration')));
+ }
+});
