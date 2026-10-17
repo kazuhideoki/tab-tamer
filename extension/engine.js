@@ -91,8 +91,10 @@ export class Engine {
       // complete (for example while an artifact iframe is still loading).
       // Keep the candidate until the tab is ready, but never revive a candidate
       // invalidated by input, navigation, removal, or configuration changes.
-      if(this.candidates.get(c.id)!==c||!c.complete||c.revision!==revision||
-         this.revisions.get(c.id)!==revision||generation!==this.generation)return;
+      if(this.candidates.get(c.id)!==c||!c.complete||c.revision!==revision)return;
+      if(this.revisions.get(c.id)!==revision||generation!==this.generation) {
+        this.trace(c.id,'check-invalidated',{revisionChanged:this.revisions.get(c.id)!==revision,reconfigured:generation!==this.generation});return;
+      }
       if(source?.status==='loading'&&source.url===c.url&&!source.pendingUrl&&
          Date.now()+settle<c.created+(this.config?.dedup.new_tab_timeout_ms??15000)) {
         this.trace(c.id,'waiting-for-tab-complete');
@@ -115,7 +117,7 @@ export class Engine {
   async deduplicate(c,source) {
     const config=this.config;if(!config?.dedup.enabled||Date.now()-c.created>config.dedup.new_tab_timeout_ms){this.trace(c.id,'disabled-or-expired',{ageMs:Date.now()-c.created});return;}
     if(source===undefined)source=await this.get(c.id);if(!source||source.pinned||source.audible||source.splitViewId>=0||source.url!==c.url||source.status!=='complete'){this.trace(c.id,'source-ineligible',{exists:!!source,pinned:!!source?.pinned,audible:!!source?.audible,splitView:source?.splitViewId>=0,sameURL:source?.url===c.url,status:source?.status});return;}
-    const windows=new Map((await this.api.windows.getAll({})).map(w=>[w.id,w]));if(windows.get(source.windowId)?.type!=='normal')return;
+    const windows=new Map((await this.api.windows.getAll({})).map(w=>[w.id,w]));if(windows.get(source.windowId)?.type!=='normal'){this.trace(c.id,'window-ineligible');return;}
     const tabs=(await this.api.tabs.query({})).map(t=>({...t,windowType:windows.get(t.windowId)?.type}));
     const target=chooseSurvivor(source,tabs,config,id=>this.ranks.get(id)??0);if(!target){this.trace(c.id,'no-eligible-target',{sameURLTabs:tabs.filter(t=>t.id!==c.id&&urlKey(t.url,config)===urlKey(source.url,config)).map(t=>({tab:t.id,status:t.status,pending:!!t.pendingUrl,discarded:!!t.discarded,older:(this.ranks.get(t.id)??0)<(this.ranks.get(c.id)??0),normalWindow:t.windowType==='normal',sameWindow:t.windowId===source.windowId,incognito:!!t.incognito}))});return;}
     const generation=this.generation,key=urlKey(source.url,config),epoch=this.epoch;

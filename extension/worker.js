@@ -2,13 +2,15 @@ import {Engine} from './engine.js';
 import {validateConfig} from './policy.js';
 import {verify,envelope,digest} from './auth.js';
 import {secret} from './bootstrap.js';
-let record=null,logs=[];
-function log(event,data={}) {logs.push({at:new Date().toISOString(),event,...data});logs=logs.slice(-100);chrome.storage.session.set({logs}).catch(()=>{});}
+let record=null,logs=[],logsLoaded=false;
+function log(event,data={}) {logs.push({at:new Date().toISOString(),event,...data});logs=logs.slice(-100);if(logsLoaded)chrome.storage.session.set({logs}).catch(()=>{});}
 const engine=new Engine(chrome,log);
 const ready=engine.enqueue(async()=>{
   const saved=await chrome.storage.local.get('configRecord');
   if(saved.configRecord){try{record=saved.configRecord;engine.config=validateConfig(record.config);}catch{record=null;log('invalid-stored-config');}}
-  const session=await chrome.storage.session.get(['logs','started']);logs=session.logs||[];
+  // Events can wake the worker before this asynchronous read completes. Keep
+  // those logs in memory until the previous history has been merged.
+  const session=await chrome.storage.session.get(['logs','started']);logs=[...(session.logs||[]),...logs].slice(-100);logsLoaded=true;
   if(!session.started){engine.restoreUntil=Date.now()+5000;await chrome.storage.session.set({started:true});}
   await engine.init();log('ready');
 });
