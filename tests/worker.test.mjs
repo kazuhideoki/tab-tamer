@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
+import {installMarkdownCopy} from '../extension/copy.js';
 import {Engine} from '../extension/engine.js';
 import {validateConfig} from '../extension/policy.js';
 
@@ -18,9 +19,10 @@ function boot(){
   tabs:{...Object.fromEntries(['onCreated','onActivated','onRemoved','onDetached','onAttached','onReplaced','onUpdated'].map(k=>[k,event()])),query:async()=>[...tabs.values()],get:async id=>{if(!tabs.has(id))throw Error('missing');return {...tabs.get(id)};},remove:async id=>{tabs.delete(id);chrome.tabs.onRemoved.emit(id);}},
   windows:{onFocusChanged:event(),getAll:async()=>[{id:1,type:'normal',focused:true}]},
   webNavigation:Object.fromEntries(['onBeforeNavigate','onCommitted','onCompleted','onErrorOccurred','onHistoryStateUpdated','onReferenceFragmentUpdated'].map(k=>[k,event()])),
+  commands:{onCommand:event()},
   runtime:{onStartup:event(),onMessage:event()},
  };
- vm.runInNewContext(source,{chrome,Engine:class extends Engine{constructor(...args){super(...args);engine=this;}},validateConfig,Date});
+ vm.runInNewContext(source,{chrome,installMarkdownCopy,Engine:class extends Engine{constructor(...args){super(...args);engine=this;}},validateConfig,Date});
  return {chrome,engine,session,writes,release,tabs,url};
 }
 test('wake-up events do not overwrite saved diagnostics before storage is read',async()=>{
