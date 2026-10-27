@@ -9,9 +9,9 @@ export function markdownLink(tab) {
 export function installMarkdownCopy(api) {
   let queue=Promise.resolve();
   async function copy(tabPromise) {
-    let result;
+    let result,tab;
     try {
-      const tab=await tabPromise;
+      tab=await tabPromise;
       const text=markdownLink(tab);
       const contexts=await api.runtime.getContexts({contextTypes:['OFFSCREEN_DOCUMENT'],documentUrls:[api.runtime.getURL('clipboard.html')]});
       if(!contexts.length)await api.offscreen.createDocument({url:'clipboard.html',reasons:['CLIPBOARD'],justification:'Copy the current tab as a Markdown link.'});
@@ -26,6 +26,13 @@ export function installMarkdownCopy(api) {
       api.action.setBadgeBackgroundColor({color:result.ok?'#187943':'#b3261e'}),
       api.action.setTitle({title:result.ok?'Tab Tamer：コピーしました':'Tab Tamer：コピー失敗 — '+result.error})
     ]);
+    // Notification failure must never turn a successful copy into a failure.
+    try {
+      const shown=tab?.id!==undefined&&await api.tabs.sendMessage(tab.id,{type:'copy-result',ok:result.ok},{frameId:0});
+      if(!shown?.shown)throw Error('No page notification');
+    }catch{
+      try {await api.action.openPopup(tab?.windowId!==undefined?{windowId:tab.windowId}:{});}catch{}
+    }
     return result;
   }
   function request(tab) {

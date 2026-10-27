@@ -94,6 +94,9 @@ try{
  await check('automatic grouping',async()=>{const t=(await tabs()).find(t=>t.id===target);assert.notEqual(t.groupId,-1);const g=await evaluate(`return await chrome.tabGroups.get(${t.groupId});`);assert.equal(g.title,'Tab Tamer Test');});
  await check('Markdown clipboard button and idle worker recovery',async()=>{
   const expected=`[Tab Tamer acceptance](${base}/other)`;
+  const pageTarget=(await rpc('Target.getTargets')).targetInfos.find(t=>t.url===base+'/other');
+  const pageSession=(await rpc('Target.attachToTarget',{targetId:pageTarget.targetId,flatten:true})).sessionId;
+  const toast=async()=> (await rpc('Runtime.evaluate',{expression:"document.querySelector('[data-tab-tamer-toast]')?.shadowRoot.textContent ?? null",returnByValue:true},pageSession)).result.value;
   const invoke=async()=>{
    await evaluate(`await chrome.tabs.update(${other},{active:true});await chrome.windows.update(${window1},{focused:true});document.querySelector('#copy-markdown').click();`);
    for(let i=0;i<50;i++){
@@ -101,10 +104,12 @@ try{
     if(!state.busy){assert.equal(state.text,'コピーしました。');break;}
     if(i===49)throw Error('copy timed out');await delay(100);
    }
+   assert.equal(await toast(),'✓ コピーしました');
    await rpc('Browser.grantPermissions',{origin:`chrome-extension://${identity.id}`,permissions:['clipboardReadWrite','clipboardSanitizedWrite']});
    assert.equal(headed?await command('pbpaste',[]):await evaluate('return await navigator.clipboard.readText();'),expected);
   };
   await invoke();
+  await delay(2500);assert.equal(await toast(),null,'toast disappears automatically');
   const shortcuts=await evaluate('return await chrome.commands.getAll();');
   assert.ok(shortcuts.find(c=>c.name==='copy-markdown')?.shortcut,'shortcut must be assigned');
   // Do not attach a debugger to the worker: allow its normal idle shutdown.

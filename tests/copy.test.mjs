@@ -7,13 +7,13 @@ test('Markdown protects title syntax and URL delimiters without double encoding'
  assert.throws(()=>markdownLink({}),/URL/);
 });
 function fixture(){
- let command,listener,exists=false,creates=0,fail=false;const writes=[],session={};
+ let command,listener,exists=false,creates=0,fail=false;const writes=[],session={},notifications=[];
  const api={runtime:{id:'test',getURL:p=>'chrome-extension://test/'+p,getContexts:async()=>exists?[{}]:[],sendMessage:async m=>{writes.push(m.text);return fail?{ok:false,error:'denied'}:{ok:true};},onMessage:{addListener:f=>listener=f}},
  offscreen:{createDocument:async()=>{creates++;exists=true;}},commands:{onCommand:{addListener:f=>command=f}},
- tabs:{query:async()=>[{title:'Title',url:'https://example.com'}]},storage:{session:{set:async v=>Object.assign(session,v)}},action:Object.fromEntries(['setBadgeText','setBadgeBackgroundColor','setTitle'].map(k=>[k,async()=>{}]))};
+ tabs:{sendMessage:async(id,message)=>{notifications.push({id,message});return {shown:true};},query:async()=>[{id:1,title:'Title',url:'https://example.com'}]},storage:{session:{set:async v=>Object.assign(session,v)}},action:Object.fromEntries(['setBadgeText','setBadgeBackgroundColor','setTitle','openPopup'].map(k=>[k,async()=>{}]))};
  const boot=()=>installMarkdownCopy(api);boot();
  const request=()=>new Promise(resolve=>listener({type:'copy-markdown'},{id:'test',url:api.runtime.getURL('status.html')},resolve));
- return {api,boot,request,writes,session,get creates(){return creates;},set fail(v){fail=v;},command:()=>command('copy-markdown',{title:'Shortcut',url:'https://example.org'})};
+ return {api,boot,request,writes,session,notifications,get creates(){return creates;},set fail(v){fail=v;},command:()=>command('copy-markdown',{title:'Shortcut',url:'https://example.org'})};
 }
 test('concurrent popup requests share one document and restart discovers existing document',async()=>{
  const f=fixture();await Promise.all([f.request(),f.request()]);assert.equal(f.creates,1);assert.equal(f.writes.length,2);
@@ -31,4 +31,14 @@ test('page messages cannot invoke clipboard writes',async()=>{
  f.api.runtime.onMessage.addListener=fn=>listener=fn;f.boot();
  assert.equal(listener({type:'copy-markdown'},{id:'test',url:'https://example.com'},()=>assert.fail('unexpected reply')),undefined);
  await new Promise(r=>setImmediate(r));assert.equal(f.writes.length,0);
+});
+
+test('success and failure notify the source tab without exposing its URL',async()=>{
+ const f=fixture();await f.request();assert.deepEqual(f.notifications,[{id:1,message:{type:'copy-result',ok:true}}]);
+ f.fail=true;await f.request();assert.equal(f.notifications[1].message.ok,false);
+});
+test('missing page receiver falls back to popup without changing copy success',async()=>{
+ const f=fixture();let opened=0;f.api.tabs.sendMessage=async()=>{throw Error('no receiver');};
+ f.api.action.openPopup=async()=>{opened++;throw Error('window closed');};
+ assert.equal((await f.request()).ok,true);assert.equal(opened,1);
 });
