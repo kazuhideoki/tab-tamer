@@ -1,3 +1,5 @@
+import {installMarkdownCopy} from './copy.js';
+installMarkdownCopy(chrome);
 import {Engine} from './engine.js';
 import {validateConfig} from './policy.js';
 import {verify,envelope,digest} from './auth.js';

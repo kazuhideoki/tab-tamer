@@ -92,6 +92,37 @@ try{
  ({target,other,window1}=await evaluate(`const w=await chrome.windows.create({url:${json(base+'/target')},focused:true});return {target:w.tabs[0].id,window1:w.id};`));
  await delay(1000);other=await evaluate(`return (await chrome.tabs.create({windowId:${window1},url:${json(base+'/other')},active:true})).id;`);await delay(800);
  await check('automatic grouping',async()=>{const t=(await tabs()).find(t=>t.id===target);assert.notEqual(t.groupId,-1);const g=await evaluate(`return await chrome.tabGroups.get(${t.groupId});`);assert.equal(g.title,'Tab Tamer Test');});
+ await check('Markdown clipboard button and idle worker recovery',async()=>{
+  const expected=`[Tab Tamer acceptance](${base}/other)`;
+  const invoke=async()=>{
+   await evaluate(`await chrome.tabs.update(${other},{active:true});await chrome.windows.update(${window1},{focused:true});document.querySelector('#copy-markdown').click();`);
+   for(let i=0;i<50;i++){
+    const state=await evaluate("return {busy:document.querySelector('#copy-markdown').disabled,text:document.querySelector('#copy-result').textContent};");
+    if(!state.busy){assert.equal(state.text,'コピーしました。');break;}
+    if(i===49)throw Error('copy timed out');await delay(100);
+   }
+   await rpc('Browser.grantPermissions',{origin:`chrome-extension://${identity.id}`,permissions:['clipboardReadWrite','clipboardSanitizedWrite']});
+   assert.equal(headed?await command('pbpaste',[]):await evaluate('return await navigator.clipboard.readText();'),expected);
+  };
+  await invoke();
+  const shortcuts=await evaluate('return await chrome.commands.getAll();');
+  assert.ok(shortcuts.find(c=>c.name==='copy-markdown')?.shortcut,'shortcut must be assigned');
+  // Do not attach a debugger to the worker: allow its normal idle shutdown.
+  await delay(40000);
+  const targets=(await rpc('Target.getTargets')).targetInfos;
+  assert.ok(!targets.some(t=>t.type==='service_worker'&&t.url===`chrome-extension://${identity.id}/worker.js`),'worker should suspend during idle');
+  await invoke();
+  if(headed){
+   await evaluate(`await chrome.runtime.sendMessage({target:'clipboard',text:'before shortcut'});await chrome.tabs.update(${other},{active:true});await chrome.windows.update(${window1},{focused:true});`);
+   await focusBrowser();
+   await command('osascript',['-e',`tell application "System Events" to tell (first application process whose unix id is ${browser.pid}) to keystroke "c" using {control down, shift down}`]);
+   await delay(500);
+   assert.equal(await command('pbpaste',[]),expected);
+  }
+  // Also recover when the offscreen document itself no longer exists.
+  await evaluate('await chrome.offscreen.closeDocument();');
+  await invoke();
+ });
  await check('foreground duplicate expands collapsed group and reuses old tab',async()=>{
   const g=(await tabs()).find(t=>t.id===target).groupId;await evaluate(`await chrome.tabGroups.update(${g},{collapsed:true});`);
   assert.equal((await evaluate(`return await chrome.tabGroups.get(${g});`)).collapsed,true);
