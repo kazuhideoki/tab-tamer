@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {markdownLink,installMarkdownCopy} from '../extension/copy.js';
-test('Markdown protects title syntax and URL delimiters without double encoding',()=>{
- assert.equal(markdownLink({title:'A [B] *C* &amp;\nD',url:'https://example.com/a(b)?x=%20&y=1'}),'[A \\[B\\] \\*C\\* \\&amp; D](https://example.com/a%28b%29?x=%20&amp;y=1)');
+test('Markdown copies title syntax and URL verbatim without escaping',()=>{
+ assert.equal(markdownLink({title:'A [B] *C* &amp;\nD',url:'https://example.com/a(b)?x=%20&y=1'}),'[A [B] *C* &amp; D](https://example.com/a(b)?x=%20&y=1)');
  assert.equal(markdownLink({title:'',url:'https://example.com/'}),'[https://example.com/](https://example.com/)');
  assert.throws(()=>markdownLink({}),/URL/);
 });

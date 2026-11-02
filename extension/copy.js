@@ -1,10 +1,8 @@
 // Independent of tab grouping and its configuration/queue.
 export function markdownLink(tab) {
   if(!tab?.url)throw Error('現在のタブのURLを取得できません。');
-  const title=(tab.title||tab.url).replace(/[\r\n\t]+/g,' ').replace(/[\\`*_{}\[\]<>()!|&~]/g,'\\$&');
-  // Encode delimiters without decoding existing percent escapes or changing queries.
-  const url=tab.url.replace(/[\s\u0000-\u001f\u007f<>()[\]\\`"']/g,c=>encodeURIComponent(c).replace(/[()']/g,x=>'%'+x.charCodeAt(0).toString(16).toUpperCase())).replace(/&/g,'&amp;');
-  return `[${title}](${url})`;
+  const title=(tab.title||tab.url).replace(/[\r\n\t]+/g,' ');
+  return `[${title}](${tab.url})`;
 }
 export function installMarkdownCopy(api) {
   let queue=Promise.resolve();
