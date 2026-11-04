@@ -11,7 +11,10 @@
     "storage",
     "webNavigation",
     "offscreen",
-    "clipboardWrite"
+    "clipboardWrite",
+    "notifications",
+    "activeTab",
+    "scripting"
   ],
   "host_permissions": [
     "http://127.0.0.1/*"
@@ -49,10 +52,17 @@
     "default_popup": "status.html"
   },
   "commands": {
-    "copy-markdown": {
+    "copy-url": {
       "suggested_key": {
         "default": "Ctrl+Shift+C",
         "mac": "MacCtrl+Shift+C"
+      },
+      "description": "現在のタブのURLをコピー"
+    },
+    "copy-markdown": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+M",
+        "mac": "MacCtrl+Shift+M"
       },
       "description": "現在のタブをMarkdownリンクとしてコピー"
     }
