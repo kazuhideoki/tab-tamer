@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import vm from 'node:vm';
 import {Suspension} from '../extension/suspension.js';
 import {validateConfig} from '../extension/policy.js';
 function fixture(){
@@ -121,4 +122,43 @@ test('a failed persistence read cannot fall back to discarding manually protecte
   const f=fixture();f.add(1);f.api.storage.local.get=async()=>{throw Error('storage unavailable');};
   const m=await f.boot();f.advance(600000);
   await assert.rejects(m.enqueue(()=>m.sweep()),/storage unavailable/);assert.deepEqual(f.discards,[]);
+});
+
+function legacyIdentity(f){
+  const stores=new Map(),calls=[];
+  f.api.scripting={executeScript:async options=>{
+    calls.push(options);
+    const store=stores.get(options.target.tabId)||new Map();stores.set(options.target.tabId,store);
+    const result=vm.runInNewContext('('+options.func.toString()+')(token)',{
+      token:options.args[0],sessionStorage:{getItem:key=>store.get(key)??null,setItem:(key,value)=>store.set(key,value)},
+      get document(){throw Error('must not access page content');}
+    });
+    return [{frameId:0,result}];
+  }};
+  return {stores,calls};
+}
+test('legacy tabs toggle both ways without a content receiver or page reload',async()=>{
+  const f=fixture();f.add(1,{active:true});f.pages.get(1).unreachable=true;
+  const identity=legacyIdentity(f);const m=await f.boot();
+  assert.equal((await m.setResident(1,'on')).resident,true);
+  assert.equal((await m.setResident(1,'off')).resident,false);
+  assert.equal((await m.setResident(1,'pin')).mode,'pin');
+  assert.ok(identity.calls.length>0);
+  for(const call of identity.calls){assert.deepEqual(call.target,{tabId:1,frameIds:[0]});assert.equal(call.world,'ISOLATED');}
+  assert.equal(f.discards.length,0);
+});
+test('late identity access preserves restoration and never pretends the legacy document is protected',async()=>{
+  const f=fixture();f.add(1);f.pages.get(1).unreachable=true;
+  const {stores}=legacyIdentity(f);let m=await f.boot();await m.setResident(1,'on');
+  const saved=stores.get(1).get('__tab_tamer_identity_v1');delete f.session.suspension;
+  m=await f.boot();assert.equal((await m.status(1)).resident,true);
+  assert.equal(stores.get(1).get('__tab_tamer_identity_v1'),saved);
+  await m.setResident(1,'off');f.advance(600000);await m.sweep();assert.deepEqual(f.discards,[]);
+});
+test('restricted pages and denied injection keep settings intact and report a failure',async()=>{
+  const f=fixture();f.add(1);const m=await f.boot();await m.setResident(1,'on');
+  f.pages.get(1).unreachable=true;f.api.scripting={executeScript:async()=>{throw Error('not permitted');}};
+  await assert.rejects(m.setResident(1,'off'),/保存できません/);assert.equal(m.states[1].manual,true);
+  f.tabs.get(1).url='brave://settings';f.api.scripting.executeScript=()=>{throw Error('must not inject into special pages');};
+  await assert.rejects(m.setResident(1,'off'),/対象外/);assert.equal(m.states[1].manual,true);
 });
