@@ -3,6 +3,7 @@ export const defaults = {
   dedup: { enabled: true, scope: 'all_windows', ignore_hash: false, ignore_query: false,
     ignore_www: false, case_insensitive: false, prefer_https: true, ignore_trailing_slash: true,
     keep_pinned: true, settle_ms: 200, new_tab_timeout_ms: 15000, exclude: [] },
+  suspension: { enabled: true, idle_minutes: 10 },
   focus: { foreground: true, expand_group: true },
   grouping: { enabled: true, preserve_manual: true }, groups: [],
 };
@@ -18,7 +19,7 @@ export function validateConfig(raw) {
   keys(raw, Object.keys(defaults), 'config');
   if (raw.version !== 1) throw Error('version must be 1');
   const c=structuredClone(defaults);
-  for(const section of ['dedup','focus','grouping']) {
+  for(const section of ['dedup','focus','grouping','suspension']) {
     if(raw[section]===undefined) continue;
     keys(raw[section],Object.keys(defaults[section]),section);
     for(const [k,v] of Object.entries(raw[section])) {
@@ -26,6 +27,7 @@ export function validateConfig(raw) {
       c[section][k]=v;
     }
   }
+  if(!Number.isInteger(c.suspension.idle_minutes)||c.suspension.idle_minutes<1||c.suspension.idle_minutes>10080)throw Error('invalid suspension.idle_minutes');
   if(!['all_windows','same_window'].includes(c.dedup.scope)) throw Error('invalid dedup.scope');
   for(const [k,min,max] of [['settle_ms',0,2000],['new_tab_timeout_ms',1000,60000]])
     if(!Number.isInteger(c.dedup[k]) || c.dedup[k]<min || c.dedup[k]>max) throw Error(`invalid dedup.${k}`);

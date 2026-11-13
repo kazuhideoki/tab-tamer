@@ -14,6 +14,11 @@ settle_ms = 200
 new_tab_timeout_ms = 15000
 exclude = []
 
+# 非選択になってからの休止待ち時間（1〜10080分）
+[suspension]
+enabled = true
+idle_minutes = 10
+
 [focus]
 foreground = true
 expand_group = true

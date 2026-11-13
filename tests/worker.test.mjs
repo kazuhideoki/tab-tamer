@@ -3,14 +3,15 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {readFileSync} from 'node:fs';
 import {installMarkdownCopy} from '../extension/copy.js';
+import {installSuspension} from '../extension/suspension.js';
 import {Engine} from '../extension/engine.js';
 import {validateConfig} from '../extension/policy.js';
 
 const source=readFileSync(new URL('../extension/worker.js',import.meta.url),'utf8').replace(/^import .*;\n/gm,'');
-function event(){let listener;return {addListener:fn=>{listener=fn;},emit:(...args)=>listener?.(...args)};}
+function event(){const listeners=[];return {addListener:fn=>listeners.push(fn),emit:(...args)=>{for(const listener of listeners)listener(...args);}};}
 function boot(){
  const old={event:'previous-session-event'},session={started:true,logs:[old]},writes=[];
- let release,engine;
+ let release,engine,suspension;
  const configGate=new Promise(resolve=>{release=resolve;});
  const url='https://example.com/a';
  const tabs=new Map([[1,{id:1,windowId:1,url,status:'complete',active:false,groupId:-1}]]);
@@ -20,10 +21,12 @@ function boot(){
   windows:{onFocusChanged:event(),getAll:async()=>[{id:1,type:'normal',focused:true}]},
   webNavigation:Object.fromEntries(['onBeforeNavigate','onCommitted','onCompleted','onErrorOccurred','onHistoryStateUpdated','onReferenceFragmentUpdated'].map(k=>[k,event()])),
   commands:{onCommand:event()},
-  runtime:{onStartup:event(),onMessage:event()},
+  alarms:{get:async()=>null,create:async()=>{},onAlarm:event()},
+  contextMenus:{onClicked:event()},
+  runtime:{id:'extension',getURL:path=>'chrome-extension://extension/'+path,onStartup:event(),onInstalled:event(),onMessage:event()},
  };
- vm.runInNewContext(source,{chrome,installMarkdownCopy,Engine:class extends Engine{constructor(...args){super(...args);engine=this;}},validateConfig,Date});
- return {chrome,engine,session,writes,release,tabs,url};
+ vm.runInNewContext(source,{chrome,installMarkdownCopy,installSuspension:(...args)=>{suspension=installSuspension(...args);return suspension;},Engine:class extends Engine{constructor(...args){super(...args);engine=this;}},validateConfig,Date});
+ return {chrome,engine,suspension,session,writes,release,tabs,url};
 }
 test('wake-up events do not overwrite saved diagnostics before storage is read',async()=>{
  const f=boot();
@@ -44,4 +47,11 @@ test('a duplicate created while the worker wakes closes after configuration load
  f.release();await f.engine.tail;
  assert.ok(f.tabs.has(1));assert.equal(f.tabs.has(2),false);
  assert.ok(f.session.logs.some(x=>x.event==='duplicate-closed'));
+});
+test('popup operations stay bound to the invocation tab across asynchronous focus changes',async()=>{
+ const f=boot();f.suspension.setResident=async id=>({target:id});
+ const reply=new Promise(resolve=>f.chrome.runtime.onMessage.emit({type:'suspension-set',tabId:1,mode:'on'},{id:'extension',url:'chrome-extension://extension/status.html'},resolve));
+ // The active tab changes while configuration is loading. Never retarget the mark.
+ f.tabs.set(2,{id:2,active:true,windowId:1});f.release();
+ assert.deepEqual(await reply,{target:1});
 });
