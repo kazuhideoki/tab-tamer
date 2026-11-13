@@ -1,9 +1,14 @@
 // Isolated Brave checks. Headless by default; --headed explicitly enables OS focus tests.
-import {mkdtemp,readFile,writeFile,mkdir,rm} from 'node:fs/promises';import {openSync,closeSync} from 'node:fs';import {join,resolve} from 'node:path';import {spawn} from 'node:child_process';import http from 'node:http';import assert from 'node:assert/strict';
+import {mkdtemp,readFile,writeFile,mkdir,rm,cp} from 'node:fs/promises';import {openSync,closeSync} from 'node:fs';import {join,resolve} from 'node:path';import {spawn} from 'node:child_process';import http from 'node:http';import assert from 'node:assert/strict';
 const headed=process.argv.includes('--headed');
 if(process.argv.slice(2).some(arg=>arg!=='--headed'))throw Error('Usage: node tests/browser.mjs [--headed]');
 console.log(`Browser mode: ${headed?'headed (uses OS focus)':'headless (no OS focus)'}`);
 const root=resolve('.');await mkdir('.work',{recursive:true});const work=await mkdtemp(join(root,'.work/brave-'));const profile=join(work,'profile');
+// This fixture models a page opened before extension update without altering runtime code.
+const testExtension=join(work,'extension');await cp(join(root,'dist'),testExtension,{recursive:true});
+const testManifest=JSON.parse(await readFile(join(testExtension,'manifest.json'),'utf8'));
+for(const script of testManifest.content_scripts)if(script.js.some(file=>['suspension-guard.js','media-watch.js'].includes(file)))script.exclude_matches=['http://127.0.0.1/legacy-resident-toggle'];
+await writeFile(join(testExtension,'manifest.json'),JSON.stringify(testManifest));
 const brave='/Applications/Brave Browser.app/Contents/MacOS/Brave Browser';const identity=JSON.parse(await readFile('.tab-tamer/identity.json','utf8'));
 const delay=ms=>new Promise(r=>setTimeout(r,ms));let browser,ws,workerSession;let seq=0;const requests=new Map();const results=[],skipped=[];
 function command(cmd,args){return new Promise((resolve,reject)=>{const p=spawn(cmd,args,{cwd:root,stdio:['ignore','pipe','pipe']});let out='',err='';p.stdout.on('data',b=>out+=b);p.stderr.on('data',b=>err+=b);p.on('error',reject);p.on('exit',code=>code===0?resolve(out):reject(Error(`${cmd}: ${err||out}`)));});}
@@ -30,7 +35,7 @@ const server=http.createServer((req,res)=>{
   res.setHeader('Content-Type','text/html');res.end(`<!doctype html><title>User navigation</title><a id="navigate" href="${mode==='new'?'/initial-server':'/target'}" ${mode==='new'?'target="_blank"':''}>Navigate</a><img src="/interaction-asset">${mode==='spa'?'<script>document.querySelector("a").onclick=e=>{e.preventDefault();history.pushState({},"","/target")}</script>':''}`);return;
  }
  if(req.url.startsWith('/slow')){slowGate.then(()=>{res.writeHead(302,{Location:'/target'});res.end();});return;}
- if(req.url.startsWith('/suspension')){res.setHeader('Content-Type','text/html');res.end('<!doctype html><title>Suspension test</title><input aria-label=Draft><iframe src="/frame"></iframe>');return;}
+ if(req.url.startsWith('/suspension')||req.url==='/legacy-resident-toggle'){res.setHeader('Content-Type','text/html');res.end('<!doctype html><title>Suspension test</title><input aria-label=Draft><iframe src="/frame"></iframe>');return;}
  if(req.url.startsWith('/target-spa')){res.setHeader('Content-Type','text/html');res.end('<!doctype html><title>SPA initial state</title><script>history.replaceState({ready:true},"",location.href)</script>');return;}
  res.setHeader('Content-Type','text/html');res.end('<!doctype html><title>Tab Tamer acceptance</title><h1>Test page</h1><a href="/target" target="_blank">Open target</a>');
 });await new Promise(r=>server.listen(0,'127.0.0.1',r));const base=`http://127.0.0.1:${server.address().port}`;
@@ -47,7 +52,7 @@ function rpc(method,params={},sessionId){return new Promise((resolve,reject)=>{c
 async function start(){
  await rm(join(profile,'DevToolsActivePort'),{force:true});
  const logFd=openSync(join(work,'browser.log'),'a');
- browser=spawn(brave,[...(headed?[]:['--headless=new']),`--user-data-dir=${profile}`,`--load-extension=${join(root,'dist')}`,`--disable-extensions-except=${join(root,'dist')}`,'--enable-logging=stderr','--remote-debugging-port=0','--no-first-run','--no-default-browser-check','--restore-last-session','about:blank'],{stdio:['ignore','ignore',logFd]});closeSync(logFd);
+ browser=spawn(brave,[...(headed?[]:['--headless=new']),`--user-data-dir=${profile}`,`--load-extension=${testExtension}`,`--disable-extensions-except=${testExtension}`,'--enable-logging=stderr','--remote-debugging-port=0','--no-first-run','--no-default-browser-check','--restore-last-session','about:blank'],{stdio:['ignore','ignore',logFd]});closeSync(logFd);
  let info;for(let i=0;i<150;i++){try{info=await readFile(join(profile,'DevToolsActivePort'),'utf8');break;}catch{await delay(100);}}if(!info)throw Error('No browser endpoint');
  const [port,path]=info.trim().split('\n');ws=new WebSocket(`ws://127.0.0.1:${port}${path}`);await new Promise((r,j)=>{ws.onopen=r;ws.onerror=j;});ws.onmessage=e=>{const m=JSON.parse(e.data);if(m.method==='Debugger.paused'){console.log('Worker debugger paused, resuming');ws.send(JSON.stringify({id:++seq,method:'Debugger.resume',sessionId:m.sessionId}));}const p=requests.get(m.id);if(p){requests.delete(m.id);m.error?p.reject(m.error):p.resolve(m.result);}};
  let target;for(let i=0;i<100;i++){const {targetInfos}=await rpc('Target.getTargets');target=targetInfos.find(t=>t.url===`chrome-extension://${identity.id}/worker.js`);if(target)break;await delay(100);}if(!target)throw Error('Worker not loaded');workerSession=null;
@@ -272,6 +277,27 @@ try{
   await assert.rejects(command('./tab-tamer',['apply',...cliBrowserArgs,'--config',join(work,'invalid.toml'),'--user-data-dir',profile]));assert.equal(await evaluate('return (await chrome.storage.local.get("configRecord")).configRecord.hash;'),before);
  });
  await check('CLI status verifies persisted hash',async()=>{assert.match(await command('./tab-tamer',['status',...cliBrowserArgs,'--user-data-dir',profile]),/status: verified/);});
+ await check('legacy resident toggle preserves open input without reloading the page',async()=>{
+  const url=base+'/legacy-resident-toggle';
+  const legacy=await evaluate(`return await chrome.tabs.create({windowId:${window1},url:${json(url)},active:true});`);await delay(500);
+  const target=(await rpc('Target.getTargets')).targetInfos.find(t=>t.url===url);
+  const sessionId=(await rpc('Target.attachToTarget',{targetId:target.targetId,flatten:true})).sessionId;
+  await rpc('Runtime.evaluate',{expression:'window.legacyMarker=Math.random();document.querySelector("input").focus()'},sessionId);
+  await rpc('Input.insertText',{text:'unsaved test draft'},sessionId);
+  const before=(await rpc('Runtime.evaluate',{expression:'({marker:legacyMarker,draft:document.querySelector("input").value})',returnByValue:true},sessionId)).result.value;
+  // This fixture has no guard, matching an existing document after an extension update.
+  const probe=await evaluate(`return await chrome.tabs.sendMessage(${legacy.id},{type:'suspension-probe'},{frameId:0}).catch(()=>null);`);
+  assert.ok(probe==null,'the legacy fixture must have no content receiver');
+  for(const mode of ['on','off','pin']){
+   const result=await evaluate(`return await chrome.runtime.sendMessage({type:'suspension-set',tabId:${legacy.id},mode:${json(mode)}});`);
+   assert.equal(result.mode,mode);assert.equal(result.resident,mode==='on');
+  }
+  const after=(await rpc('Runtime.evaluate',{expression:'({marker:legacyMarker,draft:document.querySelector("input").value})',returnByValue:true},sessionId)).result.value;
+  assert.deepEqual(after,before,'the original document and unsaved input must remain intact');
+  assert.ok((await evaluate(`return await chrome.tabs.sendMessage(${legacy.id},{type:'suspension-probe'},{frameId:0}).catch(()=>null);`))==null,'identity fallback must not fake protection coverage');
+  await rpc('Target.detachFromTarget',{sessionId});
+  await evaluate(`await chrome.tabs.remove(${legacy.id});`);
+ });
  let suspensionTabs;
  await check('automatic suspension protects input, media, resident and every selected tab',async()=>{
   const path=join(work,'suspension.toml');await writeFile(path,(await readFile(join(work,'config.toml'),'utf8'))+'\n[suspension]\nidle_minutes=1\n');

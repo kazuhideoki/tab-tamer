@@ -16,6 +16,26 @@ export class Suspension {
     try{return await Promise.race([this.api.tabs.sendMessage(id,message,options),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Page protection check timed out')),1500);})]);}
     finally{clearTimeout(timer);}
   }
+  async pageIdentity(id,token=null){
+    const message=token?{type:'suspension-identity',token}:{type:'suspension-probe'};
+    const reply=await this.send(id,message,{frameId:0}).catch(()=>null);
+    if(token?reply?.saved:reply?.identityAvailable)return reply;
+    // Updated extensions have no receiver in already-open documents. activeTab
+    // permits this identity-only operation without reloading or reading the page.
+    const tab=await this.api.tabs.get(id);
+    if(!webURL(tab.url))return null;
+    try{
+      const results=await this.api.scripting.executeScript({target:{tabId:id,frameIds:[0]},world:'ISOLATED',
+        func:token=>{
+          try{
+            const key='__tab_tamer_identity_v1';
+            if(token!==null)sessionStorage.setItem(key,token);
+            return {identityAvailable:true,token:sessionStorage.getItem(key),saved:token!==null};
+          }catch{return {identityAvailable:false,saved:false};}
+        },args:[token]});
+      return results?.[0]?.result??null;
+    }catch{return null;}
+  }
   async save(){await this.api.storage.session.set({suspension:this.states});}
   async init(){
     const {suspension}=await this.api.storage.session.get('suspension');
@@ -75,11 +95,11 @@ export class Suspension {
     if(!['on','off','pin'].includes(mode))throw Error('常駐の指定が不正です。');
     const t=await this.api.tabs.get(id);const s=this.states[id]||(this.states[id]=this.fresh(t));
     // The page must acknowledge durable identity before accepting a manual mark.
-    const page=await this.send(id,{type:'suspension-probe'},{frameId:0}).catch(()=>null);
-    if(!page?.identityAvailable)throw Error('このページでは常駐指定を保存できません。通常のWebページで再試行してください。');
+    const page=await this.pageIdentity(id);
+    if(!page?.identityAvailable)throw Error('このページでは常駐指定を保存できません。Braveの設定画面などは対象外です。');
     await this.identify(id,page.token);
     if(s.ambiguous)s.token=crypto.randomUUID();
-    const ack=await this.send(id,{type:'suspension-identity',token:s.token},{frameId:0});
+    const ack=await this.pageIdentity(id,s.token);
     if(!ack?.saved)throw Error('このページでは常駐指定を保存できません。');
     const was=this.resident(t,s);s.ambiguous=false;s.manual=mode==='pin'?null:mode==='on';
     if(s.manual===null)delete this.overrides[s.token];else this.overrides[s.token]={value:s.manual};
@@ -117,8 +137,8 @@ export class Suspension {
     const t=await this.api.tabs.get(id);const s=this.states[id]||(this.states[id]=this.fresh(t));
     // Resolve restored identity even while the selected tab is protected.
     if(!t.discarded&&webURL(t.url)){
-      const p=await this.send(id,{type:'suspension-probe'},{frameId:0}).catch(()=>null);
-      if(p?.identityAvailable){const token=await this.identify(id,p.token);await this.send(id,{type:'suspension-identity',token},{frameId:0}).catch(()=>{});}
+      const p=await this.pageIdentity(id);
+      if(p?.identityAvailable){const token=await this.identify(id,p.token);await this.pageIdentity(id,token);}
     }
     let reason=this.reason(t,s);
     if(!reason)reason=await this.protection(id).catch(()=>'保護状態を確認できないため維持');
