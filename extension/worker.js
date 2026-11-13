@@ -1,3 +1,4 @@
+import {installSuspension} from './suspension.js';
 import {installMarkdownCopy} from './copy.js';
 installMarkdownCopy(chrome);
 import {Engine} from './engine.js';
@@ -7,6 +8,7 @@ import {secret} from './bootstrap.js';
 let record=null,logs=[],logsLoaded=false;
 function log(event,data={}) {logs.push({at:new Date().toISOString(),event,...data});logs=logs.slice(-100);if(logsLoaded)chrome.storage.session.set({logs}).catch(()=>{});}
 const engine=new Engine(chrome,log);
+const suspension=installSuspension(chrome,()=>engine.config,log);
 const ready=engine.enqueue(async()=>{
   const saved=await chrome.storage.local.get('configRecord');
   if(saved.configRecord){try{record=saved.configRecord;engine.config=validateConfig(record.config);}catch{record=null;log('invalid-stored-config');}}
@@ -16,6 +18,7 @@ const ready=engine.enqueue(async()=>{
   if(!session.started){engine.restoreUntil=Date.now()+5000;await chrome.storage.session.set({started:true});}
   await engine.init();log('ready');
 });
+suspension.configurationReady=ready;
 chrome.runtime.onStartup.addListener(()=>{engine.restoreUntil=Date.now()+5000;engine.candidates.clear();});
 chrome.tabs.onCreated.addListener(t=>engine.created(t));
 chrome.tabs.onActivated.addListener(i=>engine.activated(i));
@@ -39,6 +42,17 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
   if(sender.id!==chrome.runtime.id)return;
   if(message?.type==='page-interaction'&&sender.tab) {
     engine.interacted(sender.tab.id);return;
+  }
+  if(message?.type==='suspension-hello'&&sender.tab&&sender.frameId===0) {
+    suspension.enqueue(async()=>reply({token:await suspension.identify(sender.tab.id,message.token)})).catch(()=>reply({}));return true;
+  }
+  if(['suspension-status','suspension-set'].includes(message?.type)&&page===chrome.runtime.getURL('status.html')) {
+    ready.then(()=>suspension.enqueue(async()=>{
+      if(!Number.isInteger(message.tabId))throw Error('現在のタブが見つかりません。');
+      const tab=await chrome.tabs.get(message.tabId);
+      if(message.type==='suspension-set'){engine.interacted(tab.id);return suspension.setResident(tab.id,message.mode);}
+      return suspension.status(tab.id);
+    })).then(reply,e=>reply({error:String(e.message||e)}));return true;
   }
   if(message?.type==='status'&&page===chrome.runtime.getURL('status.html')) {
     ready.then(()=>reply({configured:!!record,hash:record?.hash,appliedAt:record?.appliedAt,groups:record?.config.groups.length,logs}));return true;
@@ -68,4 +82,20 @@ chrome.runtime.onMessage.addListener((message,sender,reply)=>{
     }else if(record.hash!==hash)throw Error('Request ID reused');
     return envelope({ok:true,id:request.id,hash:record.hash,appliedAt:record.appliedAt},secret);
   }).then(reply,e=>reply({error:String(e.message||e)}));return true;
+});
+
+// Normal menu items keep the popup and context menu independent of copy badges.
+chrome.runtime.onInstalled.addListener(()=>{
+  chrome.contextMenus.removeAll().then(()=>{
+    chrome.contextMenus.create({id:'resident-toggle',title:'このタブの常駐を切り替える',contexts:['page','action']});
+    chrome.contextMenus.create({id:'resident-pin',title:'このタブの常駐をPinに連動させる',contexts:['page','action']});
+  }).catch(()=>{});
+});
+chrome.contextMenus.onClicked.addListener((info,tab)=>{
+  if(!tab||!['resident-toggle','resident-pin'].includes(info.menuItemId))return;
+  ready.then(()=>suspension.enqueue(async()=>{
+    const state=await suspension.status(tab.id);
+    engine.interacted(tab.id);
+    await suspension.setResident(tab.id,info.menuItemId==='resident-pin'?'pin':state.resident?'off':'on');
+  })).catch(e=>log('resident-change-failed',{message:String(e.message||e)}));
 });
